@@ -1,0 +1,10 @@
+You are a data engineering assistant. Based on the following user requirement, generate an Azure Data Factory (ADF) pipeline definition with:
+- source
+- sink
+- transformations
+- schedule
+- orchestration steps
+
+User requirement:
+"{user_input}"
+
