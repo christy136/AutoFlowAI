@@ -1,69 +1,64 @@
+'''Libraries'''
 from flask import Flask, request, jsonify
-from openai import OpenAI
 from dotenv import load_dotenv
 import os
-from pipeline_generator.adf_generator import create_copy_activity_pipeline, save_pipeline_to_file
 import json
-import requests
 import re
 
-load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from llm_clients.openrouter_client import generate_with_openrouter
+from pipeline_generator.adf_generator import create_copy_activity_pipeline, save_pipeline_to_file
+from prompt_engine.prompt_router import PromptRouter
+from prompt_engine.prompt_manager import PromptManager
 
+
+'''Application'''
 app = Flask(__name__)
+load_dotenv()
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
 
+'''Utility'''
 def extract_json(text):
     try:
-        # Remove markdown-style code fences (```json ... ```)
-        cleaned_text = text.replace("```json", "").replace("```", "").strip()
+        # Remove markdown-style code fences
+        cleaned = text.replace("```json", "").replace("```", "").strip()
 
-        # Extract JSON-looking block using regex
-        match = re.search(r'\{[\s\S]*?\}', cleaned_text)
-        if match:
-            json_str = match.group()
-            print("EXTRACTED JSON:\n", json_str)
-            return json.loads(json_str)
-        else:
-            print("No JSON found in the model response.")
-            return None
-    except Exception as e:
-        print("Failed to parse JSON:", e)
+        # Attempt full JSON load directly (most robust)
+        return json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        print("⚠️ JSON Decode Error:", e)
         return None
 
 
 
-def generate_pipeline(user_input):
-    prompt = f"""Return only a JSON object with the fields: source, sink, format, schedule.
-Example: {{
-  "source": "AzureBlob",
-  "sink": "AzureSqlDatabase",
-  "format": "CSV",
-  "schedule": "Daily"
-}}
-Now generate one for this requirement: {user_input}
-"""
+'''Pipeline Generation'''
+def generate_pipeline(user_input, context):
+    router = PromptRouter()
+    template = router.detect_template(user_input)
+    if not template:
+        template = "default_pipeline.j2"
+        context["user_input"] = user_input
 
-    response = requests.post("http://localhost:11434/api/generate", json={
-        "model": "llama3",
-        "prompt": prompt,
-        "stream": False
-    })
+    prompt_mgr = PromptManager()
+    rendered_prompt = prompt_mgr.render_prompt(template, context)
 
-    result = response.json()
-    return result.get("response", "")
+    llm_output = generate_with_openrouter(rendered_prompt)
+    return llm_output, None
 
 
+'''API'''
 @app.route('/generate', methods=['POST'])
 def generate():
     data = request.json
     user_input = data.get("requirement")
-    raw_output = generate_pipeline(user_input)
+    context = data.get("context", {})  # should include source/sink/schedule/etc.
 
-    print("----- RAW LLM OUTPUT -----")
-    print(raw_output)
-    print("--------------------------")
+    raw_output, error = generate_pipeline(user_input, context)
+    if error:
+        return jsonify({"error": error}), 400
+
+    # print("===== RAW LLM OUTPUT =====")
+    # print(raw_output)
+    # print("==========================")
 
     config = extract_json(raw_output)
     if config is None:
@@ -78,7 +73,5 @@ def generate():
     })
 
 
-
 if __name__ == "__main__":
     app.run(debug=True)
-
