@@ -3,59 +3,42 @@ import os
 from datetime import datetime
 
 
-def create_copy_activity_pipeline(config: dict, pipeline_name="GeneratedPipeline"):
-    source_type = config.get("source", "AzureBlob")
-    sink_type = config.get("sink", "AzureSqlDatabase")
-    file_format = config.get("format", "CSV")
-    schedule = config.get("schedule", "Daily")
+def create_copy_activity_pipeline(config):
+    source = config.get("source", {})
+    sink = config.get("sink", {})
+    schedule = config.get("schedule", "once")
 
-    # Template copy activity pipeline JSON
-    pipeline_json = {
-        "name": pipeline_name,
+    source_type = source.get("type", "").lower()
+    sink_type = sink.get("type", "").lower()  # ✅ Fix: get 'type' from dict
+
+    pipeline = {
+        "name": "CopyPipeline",
         "properties": {
-            "description": "Auto-generated pipeline",
             "activities": [
                 {
-                    "name": "CopyData",
+                    "name": "CopyActivity",
                     "type": "Copy",
-                    "dependsOn": [],
-                    "policy": {
-                        "timeout": "7.00:00:00",
-                        "retry": 0,
-                        "retryIntervalInSeconds": 30,
-                        "secureOutput": False,
-                        "secureInput": False
-                    },
-                    "userProperties": [],
+                    "inputs": [{"referenceName": "SourceDataset", "type": "DatasetReference"}],
+                    "outputs": [{"referenceName": "SinkDataset", "type": "DatasetReference"}],
                     "typeProperties": {
                         "source": {
-                            "type": "DelimitedTextSource" if file_format.lower() == "csv" else "JsonSource"
+                            "type": "BlobSource" if "blob" in source_type else "JsonSource"
                         },
                         "sink": {
-                            "type": "SqlSink" if "sql" in sink_type.lower() else "BlobSink"
+                            "type": "SqlSink" if "sql" in sink_type else "BlobSink"
                         }
-                    },
-                    "inputs": [
-                        {
-                            "referenceName": "InputDataset",
-                            "type": "DatasetReference"
-                        }
-                    ],
-                    "outputs": [
-                        {
-                            "referenceName": "OutputDataset",
-                            "type": "DatasetReference"
-                        }
-                    ]
+                    }
                 }
             ],
             "annotations": [],
-            "parameters": {},
-            "runConcurrently": False
+            "runtimeConfiguration": {
+                "frequency": schedule
+            }
         }
     }
 
-    return pipeline_json
+    return pipeline
+
 
 
 def save_pipeline_to_file(pipeline_json, path="output", pipeline_name="GeneratedPipeline"):

@@ -1,0 +1,14 @@
+Create a data pipeline that:
+- Ingests a CSV file from {{ source_location }} (path: {{ source_path }})
+- Uses Databricks PySpark to:
+{% for step in transformation_steps %}
+  - {{ step }}
+{% endfor %}
+- Loads the transformed data into the Snowflake table `{{ snowflake_table }}`
+- Schedule: {{ schedule }}
+
+Please return only a structured JSON object with the following fields:
+- source
+- transformation
+- sink
+- schedule
