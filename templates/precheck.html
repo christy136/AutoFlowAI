@@ -1,117 +1,152 @@
 {% extends "layout.html" %}
 {% block content %}
-<div class="hero mb-4">
-  <h3 class="mb-2">Prerequisite Check</h3>
-  <p class="kicker">Validate Azure prerequisites and auto-fix linked services & datasets.</p>
-</div>
+<section id="precheck-page">
+  <style>
+    /* High-contrast overrides scoped to this page */
+    #precheck-page { color: #f4f6fb; }
+    #precheck-page h3, #precheck-page h5, #precheck-page h6 { color: #ffffff; }
+    #precheck-page .kicker, 
+    #precheck-page .muted, 
+    #precheck-page .text-secondary { color: #cfd6e4 !important; }
+    #precheck-page label.form-label { color: #f8fafc; }
 
-<div class="row g-3">
-  <div class="col-lg-5">
-    <div class="card p-3">
-      <h5 class="mb-3">Context</h5>
-      <form id="precheck-form" class="vstack gap-2">
-        <div class="row">
-          <div class="col">
-            <label class="form-label">Subscription ID</label>
-            <input class="form-control" name="subscription_id" placeholder="auto (env or input)"/>
-          </div>
-        </div>
-        <div class="row">
-          <div class="col">
-            <label class="form-label">Resource Group</label>
-            <input class="form-control" name="resource_group" placeholder="AutoFlowRG"/>
-          </div>
-          <div class="col">
-            <label class="form-label">Data Factory</label>
-            <input class="form-control" name="factory_name" placeholder="AutoFlowADF"/>
-          </div>
-        </div>
+    #precheck-page .form-control, 
+    #precheck-page .form-select {
+      color: #f2f4f8;
+      border-color: #4a5568;
+    }
+    #precheck-page .form-control::placeholder {
+      color: #b7c2d9;
+      opacity: 1; /* ensure visible on dark bg */
+    }
 
-        <hr/>
-        <h6 class="mb-2">Storage</h6>
-        <div class="row">
-          <div class="col">
-            <label class="form-label">Account Name</label>
-            <input class="form-control" name="storage_account_name" placeholder="autoflowstorage9876"/>
-          </div>
-          <div class="col">
-            <label class="form-label">Account Key</label>
-            <input class="form-control" name="storage_account_key" placeholder="(optional if MI)"/>
-          </div>
-        </div>
-        <div class="row">
-          <div class="col">
-            <label class="form-label">Container</label>
-            <input class="form-control" name="container" placeholder="adf-container"/>
-          </div>
-          <div class="col">
-            <label class="form-label">Blob (file)</label>
-            <input class="form-control" name="blob_name" placeholder="sales.csv"/>
-          </div>
-        </div>
+    #precheck-page .table.table-dark thead th { color: #f8fafc; }
+    #precheck-page .table.table-dark tbody td { color: #e7ecf5; }
 
-        <hr/>
-        <h6 class="mb-2">ADF Object Names</h6>
-        <div class="row">
-          <div class="col">
-            <label class="form-label">Blob Linked Service</label>
-            <input class="form-control" name="blob_ls_name" placeholder="AzureBlobStorageLinkedService"/>
-          </div>
-          <div class="col">
-            <label class="form-label">Snowflake Linked Service</label>
-            <input class="form-control" name="snowflake_ls_name" placeholder="Snowflake_LS"/>
-          </div>
-        </div>
-        <div class="row">
-          <div class="col">
-            <label class="form-label">Source Dataset</label>
-            <input class="form-control" name="source_dataset_name" placeholder="SourceDataset"/>
-          </div>
-          <div class="col">
-            <label class="form-label">Sink Dataset</label>
-            <input class="form-control" name="sink_dataset_name" placeholder="SinkDataset"/>
-          </div>
-        </div>
+    /* Make badges readable on dark bg */
+    #precheck-page .badge { font-weight: 600; }
+    #precheck-page .badge-success { background-color: #22c55e; color: #0b1020; }
+    #precheck-page .badge-missing { background-color: #f59e0b; color: #0b1020; }
+    #precheck-page .badge-error   { background-color: #ef4444; color: #0b1020; }
+  </style>
 
-        <hr/>
-        <h6 class="mb-2">Snowflake (optional for auto-fix)</h6>
-        <div class="row">
-          <div class="col-12">
-            <label class="form-label">Snowflake Connection String</label>
-            <input class="form-control" name="snowflake_connection_string" placeholder="account=...;user=...;password=...;warehouse=...;db=...;schema=...;role=...;"/>
-          </div>
-        </div>
-        <div class="row">
-          <div class="col">
-            <label class="form-label">Schema</label>
-            <input class="form-control" name="snowflake_schema" placeholder="finance"/>
-          </div>
-          <div class="col">
-            <label class="form-label">Table</label>
-            <input class="form-control" name="snowflake_table" placeholder="daily_sales"/>
-          </div>
-        </div>
-
-        <div class="form-check mt-2">
-          <input class="form-check-input" type="checkbox" id="autofix" checked />
-          <label class="form-check-label" for="autofix">Auto-fix missing items</label>
-        </div>
-
-        <div class="d-flex gap-2 mt-3">
-          <button type="submit" class="btn btn-primary">Run Precheck</button>
-          <button type="button" id="reset-btn" class="btn btn-outline-light">Reset</button>
-        </div>
-      </form>
-    </div>
+  <div class="hero mb-4">
+    <h3 class="mb-2">Prerequisite Check</h3>
+    <p class="kicker">Validate Azure prerequisites and auto-fix linked services & datasets.</p>
   </div>
 
-  <div class="col-lg-7">
-    <div class="card p-3">
-      <h5 class="mb-3">Results</h5>
-      <div id="results" class="mono small muted">Fill the form and click "Run Precheck".</div>
+  <div class="row g-3">
+    <div class="col-lg-5">
+      <div class="card p-3">
+        <h5 class="mb-3">Context</h5>
+
+        <form id="precheck-form" class="vstack gap-2">
+          <div class="row">
+            <div class="col">
+              <label class="form-label">Subscription ID</label>
+              <input class="form-control" name="subscription_id" placeholder="auto (env or input)"/>
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="col">
+              <label class="form-label">Resource Group</label>
+              <input class="form-control" name="resource_group" placeholder="AutoFlowRG"/>
+            </div>
+            <div class="col">
+              <label class="form-label">Data Factory</label>
+              <input class="form-control" name="factory_name" placeholder="AutoFlowADF"/>
+            </div>
+          </div>
+
+          <hr/>
+          <h6 class="mb-2">Storage</h6>
+          <div class="row">
+            <div class="col">
+              <label class="form-label">Account Name</label>
+              <input class="form-control" name="storage_account_name" placeholder="autoflowstorage9876"/>
+            </div>
+            <div class="col">
+              <label class="form-label">Account Key</label>
+              <input class="form-control" name="storage_account_key" placeholder="(optional if MI)" />
+            </div>
+          </div>
+          <div class="row">
+            <div class="col">
+              <label class="form-label">Container</label>
+              <input class="form-control" name="container" placeholder="adf-container"/>
+            </div>
+            <div class="col">
+              <label class="form-label">Blob (file)</label>
+              <input class="form-control" name="blob_name" placeholder="sales.csv"/>
+            </div>
+          </div>
+
+          <hr/>
+          <h6 class="mb-2">ADF Object Names</h6>
+          <div class="row">
+            <div class="col">
+              <label class="form-label">Blob Linked Service</label>
+              <input class="form-control" name="blob_ls_name" placeholder="AzureBlobStorageLinkedService"/>
+            </div>
+            <div class="col">
+              <label class="form-label">Snowflake Linked Service</label>
+              <input class="form-control" name="snowflake_ls_name" placeholder="Snowflake1"/>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col">
+              <label class="form-label">Source Dataset</label>
+              <input class="form-control" name="source_dataset_name" placeholder="SourceDataset"/>
+            </div>
+            <div class="col">
+              <label class="form-label">Sink Dataset</label>
+              <input class="form-control" name="sink_dataset_name" placeholder="SinkDataset"/>
+            </div>
+          </div>
+
+          <hr/>
+          <h6 class="mb-2">Snowflake (optional for auto-fix)</h6>
+          <div class="row">
+            <div class="col-12">
+              <label class="form-label">Snowflake Connection String</label>
+              <input class="form-control" name="snowflake_connection_string" placeholder="account=...;user=...;password=...;warehouse=...;db=...;schema=...;role=..." />
+            </div>
+          </div>
+          <div class="row">
+            <div class="col">
+              <label class="form-label">Schema</label>
+              <input class="form-control" name="snowflake_schema" placeholder="finance"/>
+            </div>
+            <div class="col">
+              <label class="form-label">Table</label>
+              <input class="form-control" name="snowflake_table" placeholder="daily_sales"/>
+            </div>
+          </div>
+
+          <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" id="autofix" checked />
+            <label class="form-check-label" for="autofix">Auto-fix missing items</label>
+          </div>
+
+          <div id="dynamic-missing-inputs" class="mt-2"></div>
+
+          <div class="d-flex gap-2 mt-3">
+            <button type="submit" class="btn btn-primary">Run Precheck</button>
+            <button type="button" id="reset-btn" class="btn btn-outline-light">Reset</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="col-lg-7">
+      <div class="card p-3">
+        <h5 class="mb-3">Results</h5>
+        <div id="results" class="mono small muted">Fill the form and click "Run Precheck".</div>
+      </div>
     </div>
   </div>
-</div>
+</section>
 {% endblock %}
 
 {% block scripts %}
@@ -119,16 +154,7 @@
 const form = document.getElementById('precheck-form');
 const results = document.getElementById('results');
 const resetBtn = document.getElementById('reset-btn');
-
-// container where we’ll dynamically add missing inputs
-const dynamicInputsId = 'dynamic-missing-inputs';
-let dynamicDiv = document.getElementById(dynamicInputsId);
-if (!dynamicDiv) {
-  dynamicDiv = document.createElement('div');
-  dynamicDiv.id = dynamicInputsId;
-  dynamicDiv.className = 'mt-2';
-  form.appendChild(dynamicDiv);
-}
+const dynamicDiv = document.getElementById('dynamic-missing-inputs');
 
 function kv(formData) {
   const obj = {};
@@ -139,8 +165,6 @@ function kv(formData) {
 function renderMissingInputs(missingInputs) {
   const fields = Object.keys(missingInputs || {});
   if (!fields.length) { dynamicDiv.innerHTML = ''; return; }
-
-  // Build HTML for missing inputs (mask secrets heuristically)
   const html = fields.map(k => {
     const label = k.replace(/_/g,' ').replace(/\b\w/g, c => c.toUpperCase());
     const isSecret = /connection|password|key/i.test(k);
@@ -166,38 +190,42 @@ function badge(status){
   return '<span class="badge badge-error">error</span>';
 }
 
+function renderReportBlock(key, block){
+  if(!block) return '';
+  if(key==='autofix_actions'){
+    const acts = block || [];
+    const rows = acts.length ? acts.map(a=>`
+      <tr><td>${a.item}</td><td>${a.action}</td><td>${a.status}</td><td class="text-break">${a.error||JSON.stringify(a.details||{})}</td></tr>
+    `).join('') : '<tr><td colspan="4" class="text-center text-secondary">No actions taken</td></tr>';
+    return `
+      <h6 class="mt-3">Auto-fix Actions</h6>
+      <table class="table table-dark table-sm align-middle">
+        <thead><tr><th>Item</th><th>Action</th><th>Status</th><th>Info</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } else {
+    const items = (block && block.items) ? block.items : [];
+    const rows = items.map(i=>`
+      <tr>
+        <td>${i.item}</td>
+        <td>${badge(i.status)}</td>
+        <td class="text-break">${i.details ? JSON.stringify(i.details) : ''}</td>
+        <td class="text-break">${i.how_to_fix || i.error || ''}</td>
+      </tr>
+    `).join('');
+    return `
+      <h6 class="mt-3 text-capitalize">${key} report</h6>
+      <table class="table table-dark table-sm align-middle">
+        <thead><tr><th>Item</th><th>Status</th><th>Details</th><th>Notes</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+}
+
 function renderReport(report) {
-  const blocks = ['initial','autofix_actions','final'].map(key=>{
-    if(!report[key]) return '';
-    if(key==='autofix_actions'){
-      const acts = report[key] || [];
-      const rows = acts.length ? acts.map(a=>`
-        <tr><td>${a.item}</td><td>${a.action}</td><td>${a.status}</td><td class="text-break">${a.error||JSON.stringify(a.details||{})}</td></tr>
-      `).join('') : '<tr><td colspan="4" class="text-center text-secondary">No actions taken</td></tr>';
-      return `
-        <h6 class="mt-3">Auto-fix Actions</h6>
-        <table class="table table-dark table-sm align-middle">
-          <thead><tr><th>Item</th><th>Action</th><th>Status</th><th>Info</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>`;
-    } else {
-      const items = (report[key] && report[key].items) ? report[key].items : [];
-      const rows = items.map(i=>`
-        <tr>
-          <td>${i.item}</td>
-          <td>${badge(i.status)}</td>
-          <td class="text-break">${i.details ? JSON.stringify(i.details) : ''}</td>
-          <td class="text-break">${i.how_to_fix || i.error || ''}</td>
-        </tr>
-      `).join('');
-      return `
-        <h6 class="mt-3 text-capitalize">${key} report</h6>
-        <table class="table table-dark table-sm align-middle">
-          <thead><tr><th>Item</th><th>Status</th><th>Details</th><th>Notes</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>`;
-    }
-  }).join('');
+  const blocks = ['initial','autofix_actions','final']
+    .map(k => renderReportBlock(k, report[k]))
+    .join('');
   return blocks || '<div class="text-secondary">No data</div>';
 }
 
@@ -205,8 +233,7 @@ form.addEventListener('submit', async (e)=>{
   e.preventDefault();
   results.innerHTML = 'Running precheck…';
   const fd = new FormData(form);
-  const ctx = {};
-  for (const [k,v] of fd.entries()) if (v) ctx[k]=v;
+  const ctx = kv(fd);
   const auto_fix = document.getElementById('autofix').checked;
 
   const r = await fetch('/precheck', {
@@ -214,17 +241,15 @@ form.addEventListener('submit', async (e)=>{
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ context: ctx, auto_fix })
   });
-
   const json = await r.json();
 
-  // If missing_inputs present, render those fields and show initial report
-  if (!r.ok && json.missing_inputs) {
+  // API returns 200 even when inputs are missing — check payload
+  if (json.missing_inputs) {
     renderMissingInputs(json.missing_inputs);
     results.innerHTML = renderReport({ initial: json.initial });
     return;
   }
 
-  // Otherwise, normal success path: clear dynamic inputs (if any) and render all blocks
   renderMissingInputs({});
   results.innerHTML = renderReport(json);
 });
@@ -236,5 +261,3 @@ resetBtn.addEventListener('click', ()=>{
 });
 </script>
 {% endblock %}
-
-

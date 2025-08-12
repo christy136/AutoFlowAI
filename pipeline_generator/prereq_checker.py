@@ -1,20 +1,10 @@
 """
 Self-sufficient prerequisites checker + auto-fixer for ADF deployments.
-
-- check_prerequisites(context)  -> report (present/missing/errors + how_to_fix)
-- auto_fix_prereqs(context, initial_report) -> (fixed_any, actions)
-
-Auto-fix can create (when inputs are provided):
-- Azure Blob Linked Service
-- Snowflake Linked Service (requires snowflake_connection_string)
-- Source Dataset (Blob CSV)
-- Sink Dataset (Snowflake table)
 """
-
 from typing import Dict, Any, List, Tuple
 import os
 
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, InteractiveBrowserCredential, ChainedTokenCredential
 from azure.mgmt.subscription import SubscriptionClient
 from azure.mgmt.resource import ResourceManagementClient
 from azure.mgmt.datafactory import DataFactoryManagementClient
@@ -22,7 +12,6 @@ from azure.mgmt.storage import StorageManagementClient
 from azure.storage.blob import BlobServiceClient
 
 # ----------------------------- helpers -----------------------------
-
 def _ok(item: str, details: Dict[str, Any] = None):
     return {"item": item, "status": "present", "details": details or {}}
 
@@ -73,14 +62,17 @@ def check_prerequisites(context: Dict[str, Any]) -> Dict[str, Any]:
         report.append(_missing("factory_name", "Set AZURE_FACTORY_NAME or include 'factory_name' in context"))
         return _finish(report)
 
-    # clients
+    # clients (with browser fallback)
     try:
-        credential = DefaultAzureCredential()
+        credential = ChainedTokenCredential(
+            DefaultAzureCredential(exclude_cli_credential=False),
+            InteractiveBrowserCredential()
+        )
         sub_client = SubscriptionClient(credential)
         res_client = ResourceManagementClient(credential, subscription_id)
         adf_client = DataFactoryManagementClient(credential, subscription_id)
         stor_client = StorageManagementClient(credential, subscription_id)
-        report.append(_ok("credentials", {"type": "DefaultAzureCredential"}))
+        report.append(_ok("credentials", {"type": "ChainedTokenCredential"}))
     except Exception as e:
         report.append(_error("credentials", f"Auth failed: {e}"))
         return _finish(report)
@@ -206,7 +198,7 @@ def auto_fix_prereqs(context: Dict[str, Any], initial_report: Dict[str, Any]) ->
     source_dataset_name = context.get("source_dataset_name") or "SourceDataset"
     sink_dataset_name   = context.get("sink_dataset_name") or "SinkDataset"
 
-    snowflake_conn_str  = context.get("snowflake_connection_string") or os.getenv("SNOWFLAKE_CS")
+    snowflake_conn_str  = context.get("snowflake_connection_string") or os.getenv("SNOWFLAKE_CONNECTION_STRING")
     snowflake_schema    = context.get("snowflake_schema", "finance")
     snowflake_table     = context.get("snowflake_table", "daily_sales")
 
@@ -215,7 +207,10 @@ def auto_fix_prereqs(context: Dict[str, Any], initial_report: Dict[str, Any]) ->
 
     # Build clients
     try:
-        credential = DefaultAzureCredential()
+        credential = ChainedTokenCredential(
+            DefaultAzureCredential(exclude_cli_credential=False),
+            InteractiveBrowserCredential()
+        )
         adf_client = DataFactoryManagementClient(credential, subscription_id)
     except Exception as e:
         actions.append({"item": "credentials", "action": "init_clients", "status": "error", "error": str(e)})

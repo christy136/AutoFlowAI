@@ -1,7 +1,7 @@
 import os
 import json
 
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, InteractiveBrowserCredential, ChainedTokenCredential
 from azure.mgmt.datafactory import DataFactoryManagementClient
 
 
@@ -39,15 +39,16 @@ def ensure_blob_linked_service(adf_client, rg, factory, ls_name: str,
             "message": "Blob Linked Service is missing and needs Storage Account credentials."
         }
 
+    conn_str = (
+        f"DefaultEndpointsProtocol=https;"
+        f"AccountName={storage_account_name};"
+        f"AccountKey={storage_key};"
+        f"EndpointSuffix=core.windows.net"
+    )
     props = {
         "type": "AzureBlobStorage",
         "typeProperties": {
-            "connectionString": (
-                f"DefaultEndpointsProtocol=https;"
-                f"AccountName={storage_account_name};"
-                f"AccountKey={storage_key};"
-                f"EndpointSuffix=core.windows.net"
-            )
+            "connectionString": {"type": "SecureString", "value": conn_str}
         }
     }
     adf_client.linked_services.create_or_update(rg, factory, ls_name, {"properties": props})
@@ -72,7 +73,7 @@ def ensure_snowflake_linked_service(adf_client, rg, factory, ls_name: str,
     props = {
         "type": "Snowflake",
         "typeProperties": {
-            "connectionString": connection_string
+            "connectionString": {"type": "SecureString", "value": connection_string}
         }
     }
     adf_client.linked_services.create_or_update(rg, factory, ls_name, {"properties": props})
@@ -91,7 +92,7 @@ def ensure_linked_services_from_config(adf_client, rg, factory, config: dict, ct
 
     # Source (Blob)
     src = (config or {}).get("source", {}) or {}
-    blob_ls = src.get("linked_service") or os.getenv("ADF_BLOB_LINKED_SERVICE") or "AzureBlobStorage_LS"
+    blob_ls = src.get("linked_service") or os.getenv("ADF_BLOB_LINKED_SERVICE") or "AzureBlobStorageLinkedService"
     storage_account_name = ctx.get("storage_account_name") or os.getenv("STORAGE_ACCOUNT_NAME")
     storage_key = ctx.get("storage_account_key") or os.getenv("STORAGE_ACCOUNT_KEY")
 
@@ -99,7 +100,6 @@ def ensure_linked_services_from_config(adf_client, rg, factory, config: dict, ct
         adf_client, rg, factory, blob_ls, storage_account_name, storage_key
     )
     if not ok and issue:
-        # also include which linked service name we were trying to create
         issue["linked_service_name"] = blob_ls
         issues.append(issue)
 
@@ -149,7 +149,6 @@ def ensure_snowflake_table_dataset(adf_client, rg, factory, dataset_name: str, s
                                    table: str):
     if _dataset_exists(adf_client, rg, factory, dataset_name):
         return
-    # Split schema.table if given
     schema = None
     table_name = table
     if "." in table:
@@ -178,7 +177,7 @@ def ensure_datasets_from_config(adf_client, rg, factory, config: dict):
     """
     src = (config or {}).get("source", {}) or {}
     sink = (config or {}).get("sink", {}) or {}
-    blob_ls = src.get("linked_service") or os.getenv("ADF_BLOB_LINKED_SERVICE") or "AzureBlobStorage_LS"
+    blob_ls = src.get("linked_service") or os.getenv("ADF_BLOB_LINKED_SERVICE") or "AzureBlobStorageLinkedService"
     snowflake_ls = sink.get("linked_service") or os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE") or "Snowflake_LS"
 
     # Parse source path -> container, (optional) folder, file
@@ -188,7 +187,6 @@ def ensure_datasets_from_config(adf_client, rg, factory, config: dict):
     file_name = parts[-1] if len(parts) >= 2 else "sales.csv"
     folder_path = ""
     if len(parts) > 2:
-        # everything between container and file
         folder_path = "/".join(parts[1:-1])
 
     ensure_blob_csv_dataset(
@@ -233,7 +231,10 @@ def deploy_to_adf(pipeline_json_path: str, config: dict, ctx: dict):
     if not all([subscription_id, resource_group, factory_name]):
         raise RuntimeError("Azure env vars missing: AZURE_SUBSCRIPTION_ID, AZURE_RESOURCE_GROUP, AZURE_FACTORY_NAME")
 
-    credential = DefaultAzureCredential()
+    credential = ChainedTokenCredential(
+        DefaultAzureCredential(exclude_cli_credential=False),
+        InteractiveBrowserCredential()
+    )
     adf_client = DataFactoryManagementClient(credential, subscription_id)
 
     # Ensure Linked Services
