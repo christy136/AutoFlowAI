@@ -1,5 +1,0 @@
-intents:
-  - keywords: ["csv", "blob", "snowflake"]
-    template: "csv_to_snowflake.j2"
-  - keywords: ["api", "json", "postgres"]
-    template: "api_to_postgres.j2"

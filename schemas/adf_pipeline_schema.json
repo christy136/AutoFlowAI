@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["pipeline_type", "source", "sink", "schedule"],
+  "properties": {
+    "pipeline_type": { "type": "string", "enum": ["adf"] },
+    "source": {
+      "type": "object",
+      "required": ["type", "path"],
+      "properties": {
+        "type": {"type": "string"},
+        "path": {"type": "string"}
+      }
+    },
+    "transformation": {
+      "type": "array",
+      "items": {"type": "object"},
+      "default": []
+    },
+    "sink": {
+      "type": "object",
+      "required": ["type", "table"],
+      "properties": {
+        "type": {"type": "string"},
+        "table": {"type": "string"}
+      }
+    },
+    "schedule": { "type": "string" }
+  }
+}
