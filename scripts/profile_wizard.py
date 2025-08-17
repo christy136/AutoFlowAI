@@ -36,13 +36,29 @@ def discover_storage():
     except Exception:
         return ""
 def discover_adf(rg):
-    try:
-        out = subprocess.check_output([
-            "az","datafactory","factory","list","-g", rg, "-o","tsv","--query","[0].name"
-        ]).decode().strip()
-        return out
-    except Exception:
-        return ""
+     """
+     Robust ADF name discovery without relying on 'az datafactory factory'.
+     Works even if the Data Factory CLI subgroup isn't available.
+     """
+     if not rg:
+         return ""
+     cmds = [
+         # Primary: generic resource listing (no extension needed)
+         ["az","resource","list","-g", rg,
+          "--resource-type","Microsoft.DataFactory/factories",
+          "--query","[0].name","-o","tsv"],
+         # Fallback: some installs support 'az datafactory list'
+         ["az","datafactory","list","-g", rg,
+          "--query","[0].name","-o","tsv"],
+     ]
+     for cmd in cmds:
+         try:
+             out = subprocess.check_output(cmd).decode().strip()
+             if out:
+                 return out
+         except Exception:
+             pass
+     return ""
 
 def write_json(path: Path, data: dict):
     path.parent.mkdir(parents=True, exist_ok=True)

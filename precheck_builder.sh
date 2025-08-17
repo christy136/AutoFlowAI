@@ -110,7 +110,7 @@ ensure_snowflake_linked_service() {
   az datafactory linked-service create \
     -g "$rg" --factory-name "$adf" --linked-service-name "$ls_name" \
     --properties "{
-      \"type\": \"Snowflake\",
+      \"type\": \"SnowflakeV2\",
       \"typeProperties\": {
         \"connectionString\": { \"type\": \"SecureString\", \"value\": \"$snowflake_cs\" }
       }

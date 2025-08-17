@@ -31,6 +31,9 @@ from pipeline_generator.prereq_checker import (
     check_prerequisites,
     auto_fix_prereqs,
 )
+from utils.settings import (
+    BLOB_LS_DEFAULT, SNOWFLAKE_LS_DEFAULT, SRC_DS_DEFAULT, SNK_DS_DEFAULT
+)
 
 # ---- Utilities ----
 from utils.auto_corrector import auto_correct_json
@@ -53,10 +56,10 @@ with SCHEMA_PATH.open("r", encoding="utf-8") as f:
     ADF_CONFIG_SCHEMA: Dict[str, Any] = json.load(f)
 
 DEFAULTS = {
-    "blob_ls": os.getenv("ADF_BLOB_LINKED_SERVICE", "AzureBlobStorageLinkedService"),
-    "snowflake_ls": os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE", "Snowflake_LS"),
-    "source_dataset": "SourceDataset",
-    "sink_dataset": "SinkDataset",
+    "blob_ls": os.getenv("ADF_BLOB_LINKED_SERVICE", BLOB_LS_DEFAULT),
+    "snowflake_ls": os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE", SNOWFLAKE_LS_DEFAULT),
+    "source_dataset": SRC_DS_DEFAULT,
+    "sink_dataset": SNK_DS_DEFAULT,
 }
 
 # -------------------- Helpers --------------------
@@ -132,8 +135,8 @@ def call_llm_and_parse(requirement: str, ctx: dict) -> dict:
         raise ValueError(f"Config schema invalid: {ve.message}") from ve
 
     # Ensure LS names present (keep consistent with dataset creation)
-    cfg.setdefault("source", {}).setdefault("linked_service", DEFAULTS["blob_ls"])
-    cfg.setdefault("sink", {}).setdefault("linked_service", DEFAULTS["snowflake_ls"])
+    cfg.setdefault("source", {})["dataset_name"] = ctx.get("source_dataset_name", SRC_DS_DEFAULT)
+    cfg.setdefault("sink",   {})["dataset_name"] = ctx.get("sink_dataset_name",   SNK_DS_DEFAULT)
     return cfg
 
 def merge_context(payload_ctx: dict) -> dict:
@@ -457,7 +460,9 @@ def healthz():
 # Optional UI stubs — add templates/templates/precheck.html & generate.html if you use these
 @app.route("/ui/precheck")
 def ui_precheck():
-    return render_template("precheck.html")
+    # Supply dynamic context for pre-filling the form
+    ctx = merge_context({})
+    return render_template("precheck.html", ctx=ctx)
 
 @app.route("/ui/generate")
 def ui_generate():

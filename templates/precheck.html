@@ -44,18 +44,24 @@
           <div class="row">
             <div class="col">
               <label class="form-label">Subscription ID</label>
-              <input class="form-control" name="subscription_id" placeholder="auto (env or input)"/>
+              <input class="form-control" name="subscription_id"
+                    placeholder="auto (env or input)"
+                    value="{{ ctx.subscription_id or '' }}"/>
             </div>
           </div>
 
           <div class="row">
             <div class="col">
               <label class="form-label">Resource Group</label>
-              <input class="form-control" name="resource_group" placeholder="AutoFlowRG"/>
+              <input class="form-control" name="resource_group"
+                    placeholder="AutoFlowRG"
+                    value="{{ ctx.resource_group or '' }}"/>
             </div>
             <div class="col">
               <label class="form-label">Data Factory</label>
-              <input class="form-control" name="factory_name" placeholder="AutoFlowADF"/>
+              <input class="form-control" name="factory_name"
+                    placeholder="AutoFlowADF"
+                    value="{{ ctx.factory_name or '' }}"/>
             </div>
           </div>
 
@@ -64,21 +70,29 @@
           <div class="row">
             <div class="col">
               <label class="form-label">Account Name</label>
-              <input class="form-control" name="storage_account_name" placeholder="autoflowstorage9876"/>
+              <input class="form-control" name="storage_account_name"
+                    placeholder="autoflowstorage9876"
+                    value="{{ ctx.storage_account_name or '' }}"/>
             </div>
             <div class="col">
               <label class="form-label">Account Key</label>
-              <input class="form-control" name="storage_account_key" placeholder="(optional if MI)" />
+              <!-- secret: do NOT prefill -->
+              <input class="form-control" name="storage_account_key"
+                    placeholder="(optional if MI)" value=""/>
             </div>
           </div>
           <div class="row">
             <div class="col">
               <label class="form-label">Container</label>
-              <input class="form-control" name="container" placeholder="adf-container"/>
+              <input class="form-control" name="container"
+                    placeholder="adf-container"
+                    value="{{ ctx.container or '' }}"/>
             </div>
             <div class="col">
               <label class="form-label">Blob (file)</label>
-              <input class="form-control" name="blob_name" placeholder="sales.csv"/>
+              <input class="form-control" name="blob_name"
+                    placeholder="sales.csv"
+                    value="{{ ctx.blob_name or '' }}"/>
             </div>
           </div>
 
@@ -87,21 +101,29 @@
           <div class="row">
             <div class="col">
               <label class="form-label">Blob Linked Service</label>
-              <input class="form-control" name="blob_ls_name" placeholder="AzureBlobStorageLinkedService"/>
+              <input class="form-control" name="blob_ls_name"
+                    placeholder="AzureBlobStorageLinkedService"
+                    value="{{ ctx.blob_ls_name or '' }}"/>
             </div>
             <div class="col">
               <label class="form-label">Snowflake Linked Service</label>
-              <input class="form-control" name="snowflake_ls_name" placeholder="Snowflake1"/>
+              <input class="form-control" name="snowflake_ls_name"
+                    placeholder="Snowflake_LS"
+                    value="{{ ctx.snowflake_ls_name or '' }}"/>
             </div>
           </div>
           <div class="row">
             <div class="col">
               <label class="form-label">Source Dataset</label>
-              <input class="form-control" name="source_dataset_name" placeholder="SourceDataset"/>
+              <input class="form-control" name="source_dataset_name"
+                    placeholder="SourceDataset"
+                    value="{{ ctx.source_dataset_name or 'SourceDataset' }}"/>
             </div>
             <div class="col">
               <label class="form-label">Sink Dataset</label>
-              <input class="form-control" name="sink_dataset_name" placeholder="SinkDataset"/>
+              <input class="form-control" name="sink_dataset_name"
+                    placeholder="SinkDataset"
+                    value="{{ ctx.sink_dataset_name or 'SinkDataset' }}"/>
             </div>
           </div>
 
@@ -110,17 +132,24 @@
           <div class="row">
             <div class="col-12">
               <label class="form-label">Snowflake Connection String</label>
-              <input class="form-control" name="snowflake_connection_string" placeholder="account=...;user=...;password=...;warehouse=...;db=...;schema=...;role=..." />
+              <!-- secret: do NOT prefill -->
+              <input class="form-control" name="snowflake_connection_string"
+                    placeholder="account=...;user=...;password=...;warehouse=...;db=...;schema=...;role=..."
+                    value=""/>
             </div>
           </div>
           <div class="row">
             <div class="col">
               <label class="form-label">Schema</label>
-              <input class="form-control" name="snowflake_schema" placeholder="finance"/>
+              <input class="form-control" name="snowflake_schema"
+                    placeholder="finance"
+                    value="{{ ctx.snowflake_schema or '' }}"/>
             </div>
             <div class="col">
               <label class="form-label">Table</label>
-              <input class="form-control" name="snowflake_table" placeholder="daily_sales"/>
+              <input class="form-control" name="snowflake_table"
+                    placeholder="daily_sales"
+                    value="{{ ctx.snowflake_table or '' }}"/>
             </div>
           </div>
 

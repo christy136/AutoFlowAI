@@ -1,0 +1,6 @@
+{
+  "blob_container": "adf-container",
+  "blob_name": "sales.csv",
+  "snowflake_schema": "finance",
+  "snowflake_table": "daily_sales"
+}

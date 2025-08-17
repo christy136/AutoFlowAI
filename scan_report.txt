@@ -1,6 +1,6 @@
 # Auto Flow AI Repo Scan
-# Generated: 2025-08-12T12:13:13.868081Z
-# Total files: 22
+# Generated: 2025-08-17T14:38:11.128368Z
+# Total files: 24
 
 
 📄 File: /home/hp/chatgpt-pipeline-gen/app.py
@@ -24,6 +24,7 @@ from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 from dotenv import load_dotenv
 from jsonschema import validate as js_validate, ValidationError
+from dotenv import set_key, dotenv_values, load_dotenv
 
 # ---- LLM & Pipeline Modules ----
 from llm_clients.openrouter_client import generate_with_openrouter
@@ -36,6 +37,9 @@ from pipeline_generator.deploy_pipeline import deploy_to_adf
 from pipeline_generator.prereq_checker import (
     check_prerequisites,
     auto_fix_prereqs,
+)
+from utils.settings import (
+    BLOB_LS_DEFAULT, SNOWFLAKE_LS_DEFAULT, SRC_DS_DEFAULT, SNK_DS_DEFAULT
 )
 
 # ---- Utilities ----
@@ -59,10 +63,10 @@ with SCHEMA_PATH.open("r", encoding="utf-8") as f:
     ADF_CONFIG_SCHEMA: Dict[str, Any] = json.load(f)
 
 DEFAULTS = {
-    "blob_ls": os.getenv("ADF_BLOB_LINKED_SERVICE", "AzureBlobStorageLinkedService"),
-    "snowflake_ls": os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE", "Snowflake_LS"),
-    "source_dataset": "SourceDataset",
-    "sink_dataset": "SinkDataset",
+    "blob_ls": os.getenv("ADF_BLOB_LINKED_SERVICE", BLOB_LS_DEFAULT),
+    "snowflake_ls": os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE", SNOWFLAKE_LS_DEFAULT),
+    "source_dataset": SRC_DS_DEFAULT,
+    "sink_dataset": SNK_DS_DEFAULT,
 }
 
 # -------------------- Helpers --------------------
@@ -138,8 +142,8 @@ def call_llm_and_parse(requirement: str, ctx: dict) -> dict:
         raise ValueError(f"Config schema invalid: {ve.message}") from ve
 
     # Ensure LS names present (keep consistent with dataset creation)
-    cfg.setdefault("source", {}).setdefault("linked_service", DEFAULTS["blob_ls"])
-    cfg.setdefault("sink", {}).setdefault("linked_service", DEFAULTS["snowflake_ls"])
+    cfg.setdefault("source", {})["dataset_name"] = ctx.get("source_dataset_name", SRC_DS_DEFAULT)
+    cfg.setdefault("sink",   {})["dataset_name"] = ctx.get("sink_dataset_name",   SNK_DS_DEFAULT)
     return cfg
 
 def merge_context(payload_ctx: dict) -> dict:
@@ -318,6 +322,53 @@ def precheck():
         "final": final_report
     }), 200
 
+# -------------------- API: Secrets (.env) --------------------
+@app.route("/secrets/status", methods=["GET"])
+def secrets_status():
+    """
+    Return a redacted view of secrets stored in .env so the UI can confirm state.
+    """
+    env_path = ROOT / ".env"
+    vals = dotenv_values(str(env_path)) if env_path.exists() else {}
+    subset = {
+        "OPENROUTER_API_KEY": vals.get("OPENROUTER_API_KEY", ""),
+        "STORAGE_ACCOUNT_KEY": vals.get("STORAGE_ACCOUNT_KEY", ""),
+        "SNOWFLAKE_CONNECTION_STRING": vals.get("SNOWFLAKE_CONNECTION_STRING", ""),
+    }
+    return jsonify({"secrets": redact_env_map(subset)}), 200
+
+
+@app.route("/secrets/save", methods=["POST"])
+def secrets_save():
+    """
+    Persist secrets into .env, then hot-reload process env for immediate use.
+    NEVER echoes raw values; returns a redacted preview instead.
+    """
+    data = request.get_json(force=True) or {}
+    env_path = str(ROOT / ".env")
+    updated = []
+
+    for key in ("OPENROUTER_API_KEY", "STORAGE_ACCOUNT_KEY", "SNOWFLAKE_CONNECTION_STRING"):
+        if data.get(key):
+            set_key(env_path, key, data[key])
+            updated.append(key)
+
+    # hot-reload .env into the running process
+    load_dotenv(override=True)
+
+    # redacted preview
+    preview = {k: data.get(k, "") for k in updated}
+    return jsonify({"status": "saved", "updated": updated, "preview": redact_env_map(preview)}), 200
+
+
+@app.route("/ui/secrets", methods=["GET"])
+def ui_secrets():
+    """
+    Render the Secrets UI (templates/secrets.html).
+    """
+    return render_template("secrets.html")
+
+
 # -------------------- API: Profiles + .env automation --------------------
 @app.route("/profiles/save", methods=["POST"])
 def profiles_save():
@@ -416,7 +467,9 @@ def healthz():
 # Optional UI stubs — add templates/templates/precheck.html & generate.html if you use these
 @app.route("/ui/precheck")
 def ui_precheck():
-    return render_template("precheck.html")
+    # Supply dynamic context for pre-filling the form
+    ctx = merge_context({})
+    return render_template("precheck.html", ctx=ctx)
 
 @app.route("/ui/generate")
 def ui_generate():
@@ -619,6 +672,16 @@ if __name__ == "__main__":
 
 ================================================================================
 
+📄 File: /home/hp/chatgpt-pipeline-gen/keys.txt
+================================================================================
+api key = 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
+
+storage key = 3qByqlOz089Tpj/CFgiO8HjRegxrdKikx5hBa4nL40on+i6ydDJ0WrhATa25VSU5mI210duJ5q7F+ASteccBZw==
+
+snowflake_ls =  
+
+================================================================================
+
 📄 File: /home/hp/chatgpt-pipeline-gen/precheck_builder.sh
 ================================================================================
 #!/usr/bin/env bash
@@ -733,7 +796,7 @@ ensure_snowflake_linked_service() {
   az datafactory linked-service create \
     -g "$rg" --factory-name "$adf" --linked-service-name "$ls_name" \
     --properties "{
-      \"type\": \"Snowflake\",
+      \"type\": \"SnowflakeV2\",
       \"typeProperties\": {
         \"connectionString\": { \"type\": \"SecureString\", \"value\": \"$snowflake_cs\" }
       }
@@ -914,48 +977,12 @@ azure-storage-blob>=12.22.0
 tqdm>=4.66.0
 ================================================================================
 
-📄 File: /home/hp/chatgpt-pipeline-gen/validator_registry.yaml
-================================================================================
-adf:
-  schema: schemas/adf_pipeline_schema.json
-
-================================================================================
-
-📄 File: /home/hp/chatgpt-pipeline-gen/llm_clients/deepseek_client.py
-================================================================================
-import os
-from dotenv import load_dotenv
-from openai import OpenAI
-
-load_dotenv()
-
-client = OpenAI(
-    api_key=os.getenv("DEEPSEEK_API_KEY"),
-    base_url="https://openrouter.ai/api/v1"
-)
-
-def generate_with_deepseek(prompt: str) -> str:
-    try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            stream=False
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        print("DeepSeek error:", e)
-        return ""
-
-================================================================================
-
 📄 File: /home/hp/chatgpt-pipeline-gen/llm_clients/openrouter_client.py
 ================================================================================
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
+from utils.settings import OPENROUTER_MODEL_DEFAULT  
 
 load_dotenv()
 
@@ -966,11 +993,10 @@ client = OpenAI(
 
 def generate_with_openrouter(prompt: str) -> str:
     try:
+        model = os.getenv("OPENROUTER_MODEL", OPENROUTER_MODEL_DEFAULT) 
         completion = client.chat.completions.create(
-            model="deepseek/deepseek-chat-v3-0324:free",
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
             extra_headers={
                 "HTTP-Referer": os.getenv("YOUR_SITE_URL", ""),
                 "X-Title": os.getenv("YOUR_SITE_NAME", "")
@@ -981,6 +1007,26 @@ def generate_with_openrouter(prompt: str) -> str:
         print("OpenRouter API error:", e)
         return ""
 
+================================================================================
+
+📄 File: /home/hp/chatgpt-pipeline-gen/profiles/account-dev.json
+================================================================================
+{
+  "subscription_id": "f9465970-0d45-4cd7-bbee-e8e932261a6f",
+  "resource_group": "AutoFlowRG",
+  "factory_name": "AutoFlowADF",
+  "storage_account_name": "autoflowstorage9876"
+}
+================================================================================
+
+📄 File: /home/hp/chatgpt-pipeline-gen/profiles/usecase-blob2sf-sales.json
+================================================================================
+{
+  "blob_container": "adf-container",
+  "blob_name": "sales.csv",
+  "snowflake_schema": "finance",
+  "snowflake_table": "daily_sales"
+}
 ================================================================================
 
 📄 File: /home/hp/chatgpt-pipeline-gen/scripts/get_env.py
@@ -1113,14 +1159,29 @@ def discover_storage():
     except Exception:
         return ""
 def discover_adf(rg):
-    try:
-        # first factory in RG (adjust query as desired)
-        out = subprocess.check_output([
-            "az","datafactory","factory","list","-g", rg, "-o","tsv","--query","[0].name"
-        ]).decode().strip()
-        return out
-    except Exception:
-        return ""
+     """
+     Robust ADF name discovery without relying on 'az datafactory factory'.
+     Works even if the Data Factory CLI subgroup isn't available.
+     """
+     if not rg:
+         return ""
+     cmds = [
+         # Primary: generic resource listing (no extension needed)
+         ["az","resource","list","-g", rg,
+          "--resource-type","Microsoft.DataFactory/factories",
+          "--query","[0].name","-o","tsv"],
+         # Fallback: some installs support 'az datafactory list'
+         ["az","datafactory","list","-g", rg,
+          "--query","[0].name","-o","tsv"],
+     ]
+     for cmd in cmds:
+         try:
+             out = subprocess.check_output(cmd).decode().strip()
+             if out:
+                 return out
+         except Exception:
+             pass
+     return ""
 
 def write_json(path: Path, data: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1166,16 +1227,27 @@ def main():
         "snowflake_table": table
     }
 
-    write_json(PROFILES_DIR / f"account-{preset}.json", acct_json)
-    write_json(PROFILES_DIR / f"usecase-{usecase}.json", uc_json)
+    acct_path = PROFILES_DIR / f"account-{preset}.json"
+    uc_path   = PROFILES_DIR / f"usecase-{usecase}.json"
+
+    write_json(acct_path, acct_json)
+    write_json(uc_path, uc_json)
 
     print("\nNext:")
-    print(f"  python scripts/gen_env.py --account profiles/account-{preset}.json "
-          f"--usecase profiles/usecase-{usecase}.json --out .env")
+    print(f"  python scripts/get_env.py --account {acct_path} --usecase {uc_path} --out .env")
+
+    # Optional: run it now
+    run_now = prompt("Generate .env now from these profiles? (y/N)", "N")
+    if run_now.lower().startswith("y"):
+        try:
+            cmd = [sys.executable, "scripts/get_env.py", "--account", str(acct_path), "--usecase", str(uc_path), "--out", ".env"]
+            subprocess.run(cmd, check=True)
+            print("✅ .env generated.")
+        except Exception as e:
+            print(f"⚠️ Failed to generate .env: {e}")
 
 if __name__ == "__main__":
     sys.exit(main())
-
 
 ================================================================================
 
@@ -1335,6 +1407,31 @@ def log_error(reason, error_type, data):
 
 ================================================================================
 
+📄 File: /home/hp/chatgpt-pipeline-gen/utils/settings.py
+================================================================================
+# utils/settings.py
+import os
+
+# Canonical Linked Service names
+BLOB_LS_DEFAULT = "AzureBlobStorageLinkedService"
+SNOWFLAKE_LS_DEFAULT = "Snowflake_LS"  # <-- set to your actual LS name in ADF
+
+# Canonical dataset names
+SRC_DS_DEFAULT = "SourceDataset"
+SNK_DS_DEFAULT = "SinkDataset"
+
+# CSV parsing defaults
+CSV_DELIMITER_DEFAULT = ","
+CSV_HEADER_DEFAULT = True
+
+# LLM model control
+OPENROUTER_MODEL_DEFAULT = "deepseek/deepseek-chat-v3-0324:free"
+
+# Guidance region fallback (only for messages, not commands)
+REGION_FALLBACK = "westeurope"
+
+================================================================================
+
 📄 File: /home/hp/chatgpt-pipeline-gen/schemas/adf_pipeline_schema.json
 ================================================================================
 {
@@ -1473,11 +1570,7 @@ resetBtn.addEventListener('click', ()=>{
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>{{ title or "AutoFlowAI" }}</title>
-  <!-- Bootstrap CSS (CDN) -->
-  <link
-    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-    rel="stylesheet"
-  />
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"/>
   <style>
     body { background: #0e0f13; color: #e5e7eb; }
     .navbar { background: #151820; }
@@ -1503,6 +1596,7 @@ resetBtn.addEventListener('click', ()=>{
       <div class="d-flex gap-2">
         <a href="/ui/precheck" class="btn btn-outline-light btn-sm">Precheck</a>
         <a href="/ui/generate" class="btn btn-outline-light btn-sm">Generate</a>
+        <a href="/ui/secrets" class="btn btn-outline-light btn-sm">Secrets</a>
       </div>
     </div>
   </nav>
@@ -1511,12 +1605,10 @@ resetBtn.addEventListener('click', ()=>{
     {% block content %}{% endblock %}
   </main>
 
-  <!-- Bootstrap JS (CDN) -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>
-
 
 ================================================================================
 
@@ -1524,118 +1616,182 @@ resetBtn.addEventListener('click', ()=>{
 ================================================================================
 {% extends "layout.html" %}
 {% block content %}
-<div class="hero mb-4">
-  <h3 class="mb-2">Prerequisite Check</h3>
-  <p class="kicker">Validate Azure prerequisites and auto-fix linked services & datasets.</p>
-</div>
+<section id="precheck-page">
+  <style>
+    /* High-contrast overrides scoped to this page */
+    #precheck-page { color: #f4f6fb; }
+    #precheck-page h3, #precheck-page h5, #precheck-page h6 { color: #ffffff; }
+    #precheck-page .kicker, 
+    #precheck-page .muted, 
+    #precheck-page .text-secondary { color: #cfd6e4 !important; }
+    #precheck-page label.form-label { color: #f8fafc; }
 
-<div class="row g-3">
-  <div class="col-lg-5">
-    <div class="card p-3">
-      <h5 class="mb-3">Context</h5>
-      <form id="precheck-form" class="vstack gap-2">
-        <div class="row">
-          <div class="col">
-            <label class="form-label">Subscription ID</label>
-            <input class="form-control" name="subscription_id" placeholder="auto (env or input)"/>
-          </div>
-        </div>
-        <div class="row">
-          <div class="col">
-            <label class="form-label">Resource Group</label>
-            <input class="form-control" name="resource_group" placeholder="AutoFlowRG"/>
-          </div>
-          <div class="col">
-            <label class="form-label">Data Factory</label>
-            <input class="form-control" name="factory_name" placeholder="AutoFlowADF"/>
-          </div>
-        </div>
+    #precheck-page .form-control, 
+    #precheck-page .form-select {
+      color: #f2f4f8;
+      border-color: #4a5568;
+    }
+    #precheck-page .form-control::placeholder {
+      color: #b7c2d9;
+      opacity: 1; /* ensure visible on dark bg */
+    }
 
-        <hr/>
-        <h6 class="mb-2">Storage</h6>
-        <div class="row">
-          <div class="col">
-            <label class="form-label">Account Name</label>
-            <input class="form-control" name="storage_account_name" placeholder="autoflowstorage9876"/>
-          </div>
-          <div class="col">
-            <label class="form-label">Account Key</label>
-            <input class="form-control" name="storage_account_key" placeholder="(optional if MI)"/>
-          </div>
-        </div>
-        <div class="row">
-          <div class="col">
-            <label class="form-label">Container</label>
-            <input class="form-control" name="container" placeholder="adf-container"/>
-          </div>
-          <div class="col">
-            <label class="form-label">Blob (file)</label>
-            <input class="form-control" name="blob_name" placeholder="sales.csv"/>
-          </div>
-        </div>
+    #precheck-page .table.table-dark thead th { color: #f8fafc; }
+    #precheck-page .table.table-dark tbody td { color: #e7ecf5; }
 
-        <hr/>
-        <h6 class="mb-2">ADF Object Names</h6>
-        <div class="row">
-          <div class="col">
-            <label class="form-label">Blob Linked Service</label>
-            <input class="form-control" name="blob_ls_name" placeholder="AzureBlobStorageLinkedService"/>
-          </div>
-          <div class="col">
-            <label class="form-label">Snowflake Linked Service</label>
-            <input class="form-control" name="snowflake_ls_name" placeholder="Snowflake_LS"/>
-          </div>
-        </div>
-        <div class="row">
-          <div class="col">
-            <label class="form-label">Source Dataset</label>
-            <input class="form-control" name="source_dataset_name" placeholder="SourceDataset"/>
-          </div>
-          <div class="col">
-            <label class="form-label">Sink Dataset</label>
-            <input class="form-control" name="sink_dataset_name" placeholder="SinkDataset"/>
-          </div>
-        </div>
+    /* Make badges readable on dark bg */
+    #precheck-page .badge { font-weight: 600; }
+    #precheck-page .badge-success { background-color: #22c55e; color: #0b1020; }
+    #precheck-page .badge-missing { background-color: #f59e0b; color: #0b1020; }
+    #precheck-page .badge-error   { background-color: #ef4444; color: #0b1020; }
+  </style>
 
-        <hr/>
-        <h6 class="mb-2">Snowflake (optional for auto-fix)</h6>
-        <div class="row">
-          <div class="col-12">
-            <label class="form-label">Snowflake Connection String</label>
-            <input class="form-control" name="snowflake_connection_string" placeholder="account=...;user=...;password=...;warehouse=...;db=...;schema=...;role=...;"/>
-          </div>
-        </div>
-        <div class="row">
-          <div class="col">
-            <label class="form-label">Schema</label>
-            <input class="form-control" name="snowflake_schema" placeholder="finance"/>
-          </div>
-          <div class="col">
-            <label class="form-label">Table</label>
-            <input class="form-control" name="snowflake_table" placeholder="daily_sales"/>
-          </div>
-        </div>
-
-        <div class="form-check mt-2">
-          <input class="form-check-input" type="checkbox" id="autofix" checked />
-          <label class="form-check-label" for="autofix">Auto-fix missing items</label>
-        </div>
-
-        <div class="d-flex gap-2 mt-3">
-          <button type="submit" class="btn btn-primary">Run Precheck</button>
-          <button type="button" id="reset-btn" class="btn btn-outline-light">Reset</button>
-        </div>
-      </form>
-    </div>
+  <div class="hero mb-4">
+    <h3 class="mb-2">Prerequisite Check</h3>
+    <p class="kicker">Validate Azure prerequisites and auto-fix linked services & datasets.</p>
   </div>
 
-  <div class="col-lg-7">
-    <div class="card p-3">
-      <h5 class="mb-3">Results</h5>
-      <div id="results" class="mono small muted">Fill the form and click "Run Precheck".</div>
+  <div class="row g-3">
+    <div class="col-lg-5">
+      <div class="card p-3">
+        <h5 class="mb-3">Context</h5>
+
+        <form id="precheck-form" class="vstack gap-2">
+          <div class="row">
+            <div class="col">
+              <label class="form-label">Subscription ID</label>
+              <input class="form-control" name="subscription_id"
+                    placeholder="auto (env or input)"
+                    value="{{ ctx.subscription_id or '' }}"/>
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="col">
+              <label class="form-label">Resource Group</label>
+              <input class="form-control" name="resource_group"
+                    placeholder="AutoFlowRG"
+                    value="{{ ctx.resource_group or '' }}"/>
+            </div>
+            <div class="col">
+              <label class="form-label">Data Factory</label>
+              <input class="form-control" name="factory_name"
+                    placeholder="AutoFlowADF"
+                    value="{{ ctx.factory_name or '' }}"/>
+            </div>
+          </div>
+
+          <hr/>
+          <h6 class="mb-2">Storage</h6>
+          <div class="row">
+            <div class="col">
+              <label class="form-label">Account Name</label>
+              <input class="form-control" name="storage_account_name"
+                    placeholder="autoflowstorage9876"
+                    value="{{ ctx.storage_account_name or '' }}"/>
+            </div>
+            <div class="col">
+              <label class="form-label">Account Key</label>
+              <!-- secret: do NOT prefill -->
+              <input class="form-control" name="storage_account_key"
+                    placeholder="(optional if MI)" value=""/>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col">
+              <label class="form-label">Container</label>
+              <input class="form-control" name="container"
+                    placeholder="adf-container"
+                    value="{{ ctx.container or '' }}"/>
+            </div>
+            <div class="col">
+              <label class="form-label">Blob (file)</label>
+              <input class="form-control" name="blob_name"
+                    placeholder="sales.csv"
+                    value="{{ ctx.blob_name or '' }}"/>
+            </div>
+          </div>
+
+          <hr/>
+          <h6 class="mb-2">ADF Object Names</h6>
+          <div class="row">
+            <div class="col">
+              <label class="form-label">Blob Linked Service</label>
+              <input class="form-control" name="blob_ls_name"
+                    placeholder="AzureBlobStorageLinkedService"
+                    value="{{ ctx.blob_ls_name or '' }}"/>
+            </div>
+            <div class="col">
+              <label class="form-label">Snowflake Linked Service</label>
+              <input class="form-control" name="snowflake_ls_name"
+                    placeholder="Snowflake_LS"
+                    value="{{ ctx.snowflake_ls_name or '' }}"/>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col">
+              <label class="form-label">Source Dataset</label>
+              <input class="form-control" name="source_dataset_name"
+                    placeholder="SourceDataset"
+                    value="{{ ctx.source_dataset_name or 'SourceDataset' }}"/>
+            </div>
+            <div class="col">
+              <label class="form-label">Sink Dataset</label>
+              <input class="form-control" name="sink_dataset_name"
+                    placeholder="SinkDataset"
+                    value="{{ ctx.sink_dataset_name or 'SinkDataset' }}"/>
+            </div>
+          </div>
+
+          <hr/>
+          <h6 class="mb-2">Snowflake (optional for auto-fix)</h6>
+          <div class="row">
+            <div class="col-12">
+              <label class="form-label">Snowflake Connection String</label>
+              <!-- secret: do NOT prefill -->
+              <input class="form-control" name="snowflake_connection_string"
+                    placeholder="account=...;user=...;password=...;warehouse=...;db=...;schema=...;role=..."
+                    value=""/>
+            </div>
+          </div>
+          <div class="row">
+            <div class="col">
+              <label class="form-label">Schema</label>
+              <input class="form-control" name="snowflake_schema"
+                    placeholder="finance"
+                    value="{{ ctx.snowflake_schema or '' }}"/>
+            </div>
+            <div class="col">
+              <label class="form-label">Table</label>
+              <input class="form-control" name="snowflake_table"
+                    placeholder="daily_sales"
+                    value="{{ ctx.snowflake_table or '' }}"/>
+            </div>
+          </div>
+
+          <div class="form-check mt-2">
+            <input class="form-check-input" type="checkbox" id="autofix" checked />
+            <label class="form-check-label" for="autofix">Auto-fix missing items</label>
+          </div>
+
+          <div id="dynamic-missing-inputs" class="mt-2"></div>
+
+          <div class="d-flex gap-2 mt-3">
+            <button type="submit" class="btn btn-primary">Run Precheck</button>
+            <button type="button" id="reset-btn" class="btn btn-outline-light">Reset</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="col-lg-7">
+      <div class="card p-3">
+        <h5 class="mb-3">Results</h5>
+        <div id="results" class="mono small muted">Fill the form and click "Run Precheck".</div>
+      </div>
     </div>
   </div>
-</div>
+</section>
 {% endblock %}
 
 {% block scripts %}
@@ -1643,16 +1799,7 @@ resetBtn.addEventListener('click', ()=>{
 const form = document.getElementById('precheck-form');
 const results = document.getElementById('results');
 const resetBtn = document.getElementById('reset-btn');
-
-// container where we’ll dynamically add missing inputs
-const dynamicInputsId = 'dynamic-missing-inputs';
-let dynamicDiv = document.getElementById(dynamicInputsId);
-if (!dynamicDiv) {
-  dynamicDiv = document.createElement('div');
-  dynamicDiv.id = dynamicInputsId;
-  dynamicDiv.className = 'mt-2';
-  form.appendChild(dynamicDiv);
-}
+const dynamicDiv = document.getElementById('dynamic-missing-inputs');
 
 function kv(formData) {
   const obj = {};
@@ -1663,8 +1810,6 @@ function kv(formData) {
 function renderMissingInputs(missingInputs) {
   const fields = Object.keys(missingInputs || {});
   if (!fields.length) { dynamicDiv.innerHTML = ''; return; }
-
-  // Build HTML for missing inputs (mask secrets heuristically)
   const html = fields.map(k => {
     const label = k.replace(/_/g,' ').replace(/\b\w/g, c => c.toUpperCase());
     const isSecret = /connection|password|key/i.test(k);
@@ -1690,38 +1835,42 @@ function badge(status){
   return '<span class="badge badge-error">error</span>';
 }
 
+function renderReportBlock(key, block){
+  if(!block) return '';
+  if(key==='autofix_actions'){
+    const acts = block || [];
+    const rows = acts.length ? acts.map(a=>`
+      <tr><td>${a.item}</td><td>${a.action}</td><td>${a.status}</td><td class="text-break">${a.error||JSON.stringify(a.details||{})}</td></tr>
+    `).join('') : '<tr><td colspan="4" class="text-center text-secondary">No actions taken</td></tr>';
+    return `
+      <h6 class="mt-3">Auto-fix Actions</h6>
+      <table class="table table-dark table-sm align-middle">
+        <thead><tr><th>Item</th><th>Action</th><th>Status</th><th>Info</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } else {
+    const items = (block && block.items) ? block.items : [];
+    const rows = items.map(i=>`
+      <tr>
+        <td>${i.item}</td>
+        <td>${badge(i.status)}</td>
+        <td class="text-break">${i.details ? JSON.stringify(i.details) : ''}</td>
+        <td class="text-break">${i.how_to_fix || i.error || ''}</td>
+      </tr>
+    `).join('');
+    return `
+      <h6 class="mt-3 text-capitalize">${key} report</h6>
+      <table class="table table-dark table-sm align-middle">
+        <thead><tr><th>Item</th><th>Status</th><th>Details</th><th>Notes</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+}
+
 function renderReport(report) {
-  const blocks = ['initial','autofix_actions','final'].map(key=>{
-    if(!report[key]) return '';
-    if(key==='autofix_actions'){
-      const acts = report[key] || [];
-      const rows = acts.length ? acts.map(a=>`
-        <tr><td>${a.item}</td><td>${a.action}</td><td>${a.status}</td><td class="text-break">${a.error||JSON.stringify(a.details||{})}</td></tr>
-      `).join('') : '<tr><td colspan="4" class="text-center text-secondary">No actions taken</td></tr>';
-      return `
-        <h6 class="mt-3">Auto-fix Actions</h6>
-        <table class="table table-dark table-sm align-middle">
-          <thead><tr><th>Item</th><th>Action</th><th>Status</th><th>Info</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>`;
-    } else {
-      const items = (report[key] && report[key].items) ? report[key].items : [];
-      const rows = items.map(i=>`
-        <tr>
-          <td>${i.item}</td>
-          <td>${badge(i.status)}</td>
-          <td class="text-break">${i.details ? JSON.stringify(i.details) : ''}</td>
-          <td class="text-break">${i.how_to_fix || i.error || ''}</td>
-        </tr>
-      `).join('');
-      return `
-        <h6 class="mt-3 text-capitalize">${key} report</h6>
-        <table class="table table-dark table-sm align-middle">
-          <thead><tr><th>Item</th><th>Status</th><th>Details</th><th>Notes</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>`;
-    }
-  }).join('');
+  const blocks = ['initial','autofix_actions','final']
+    .map(k => renderReportBlock(k, report[k]))
+    .join('');
   return blocks || '<div class="text-secondary">No data</div>';
 }
 
@@ -1729,8 +1878,7 @@ form.addEventListener('submit', async (e)=>{
   e.preventDefault();
   results.innerHTML = 'Running precheck…';
   const fd = new FormData(form);
-  const ctx = {};
-  for (const [k,v] of fd.entries()) if (v) ctx[k]=v;
+  const ctx = kv(fd);
   const auto_fix = document.getElementById('autofix').checked;
 
   const r = await fetch('/precheck', {
@@ -1738,17 +1886,15 @@ form.addEventListener('submit', async (e)=>{
     headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ context: ctx, auto_fix })
   });
-
   const json = await r.json();
 
-  // If missing_inputs present, render those fields and show initial report
-  if (!r.ok && json.missing_inputs) {
+  // API returns 200 even when inputs are missing — check payload
+  if (json.missing_inputs) {
     renderMissingInputs(json.missing_inputs);
     results.innerHTML = renderReport({ initial: json.initial });
     return;
   }
 
-  // Otherwise, normal success path: clear dynamic inputs (if any) and render all blocks
   renderMissingInputs({});
   results.innerHTML = renderReport(json);
 });
@@ -1760,8 +1906,6 @@ resetBtn.addEventListener('click', ()=>{
 });
 </script>
 {% endblock %}
-
-
 
 ================================================================================
 
@@ -1986,9 +2130,12 @@ def save_pipeline_to_file(pipeline_json: Dict[str, Any],
 import os
 import json
 
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, InteractiveBrowserCredential, ChainedTokenCredential
 from azure.mgmt.datafactory import DataFactoryManagementClient
-
+from utils.settings import (
+    BLOB_LS_DEFAULT, SNOWFLAKE_LS_DEFAULT, SRC_DS_DEFAULT, SNK_DS_DEFAULT
+)
+from datetime import datetime, timezone
 
 # ---------- Helpers ----------
 
@@ -2005,7 +2152,92 @@ def _dataset_exists(adf_client, rg, factory, name: str) -> bool:
         return True
     except Exception:
         return False
+# ---- Scheduling helpers ------------------------------------------------------
+def _parse_schedule_string(s: str) -> dict | None:
+    """
+    Accepts: "once", "manual", "", "daily", "daily@HH:MM"
+    Returns a dict like {"kind":"daily","hour":H,"minute":M} or None (no trigger).
+    """
+    if not s:
+        return None
+    s = str(s).strip().lower()
+    if s in {"once", "manual", "off", "disabled", "none"}:
+        return None
+    if s == "daily":
+        return {"kind": "daily", "hour": 0, "minute": 0}
+    if s.startswith("daily@"):
+        try:
+            hhmm = s.split("@", 1)[1]
+            hh, mm = hhmm.split(":", 1)
+            h = max(0, min(23, int(hh)))
+            m = max(0, min(59, int(mm)))
+            return {"kind": "daily", "hour": h, "minute": m}
+        except Exception:
+            # fall back to a daily midnight trigger if parse fails
+            return {"kind": "daily", "hour": 0, "minute": 0}
+    # If you want to expand later (hourly/cron), do it here.
+    return None
 
+
+def ensure_schedule_trigger(adf_client,
+                            resource_group: str,
+                            factory_name: str,
+                            pipeline_name: str,
+                            schedule_string: str) -> dict | None:
+    """
+    Creates/updates a ScheduleTrigger that runs the given pipeline.
+    Starts (enables) the trigger after creation.
+    Returns a small result dict or None if no trigger is needed.
+    """
+    parsed = _parse_schedule_string(schedule_string)
+    if not parsed:
+        return None  # no trigger requested
+
+    trigger_name = f"{pipeline_name}_schedule"
+    now_utc = datetime.now(timezone.utc)
+
+    if parsed["kind"] == "daily":
+        hour = int(parsed["hour"])
+        minute = int(parsed["minute"])
+
+        props = {
+            "type": "ScheduleTrigger",
+            "pipelines": [
+                {
+                    "pipelineReference": {
+                        "referenceName": pipeline_name,
+                        "type": "PipelineReference"
+                    },
+                    "parameters": {}
+                }
+            ],
+            "typeProperties": {
+                "recurrence": {
+                    "frequency": "Day",
+                    "interval": 1,
+                    "startTime": now_utc.isoformat(),  # required; immediate window OK
+                    "timeZone": "UTC",
+                    "schedule": {"hours": [hour], "minutes": [minute]}
+                }
+            }
+        }
+
+        adf_client.triggers.create_or_update(
+            resource_group_name=resource_group,
+            factory_name=factory_name,
+            trigger_name=trigger_name,
+            trigger={"properties": props}
+        )
+        # Start (enable) the trigger
+        adf_client.triggers.start(
+            resource_group_name=resource_group,
+            factory_name=factory_name,
+            trigger_name=trigger_name
+        )
+        return {"trigger": trigger_name, "status": "started", "schedule": schedule_string}
+
+    # Future kinds could be handled here
+    return None
 
 # ---------- Ensure Linked Services ----------
 
@@ -2024,15 +2256,16 @@ def ensure_blob_linked_service(adf_client, rg, factory, ls_name: str,
             "message": "Blob Linked Service is missing and needs Storage Account credentials."
         }
 
+    conn_str = (
+        f"DefaultEndpointsProtocol=https;"
+        f"AccountName={storage_account_name};"
+        f"AccountKey={storage_key};"
+        f"EndpointSuffix=core.windows.net"
+    )
     props = {
         "type": "AzureBlobStorage",
         "typeProperties": {
-            "connectionString": (
-                f"DefaultEndpointsProtocol=https;"
-                f"AccountName={storage_account_name};"
-                f"AccountKey={storage_key};"
-                f"EndpointSuffix=core.windows.net"
-            )
+            "connectionString": {"type": "SecureString", "value": conn_str}
         }
     }
     adf_client.linked_services.create_or_update(rg, factory, ls_name, {"properties": props})
@@ -2055,10 +2288,10 @@ def ensure_snowflake_linked_service(adf_client, rg, factory, ls_name: str,
         }
 
     props = {
-        "type": "Snowflake",
-        "typeProperties": {
-            "connectionString": connection_string
-        }
+    "type": "SnowflakeV2",
+    "typeProperties": {
+        "connectionString": {"type": "SecureString", "value": connection_string}
+    }
     }
     adf_client.linked_services.create_or_update(rg, factory, ls_name, {"properties": props})
     return True, None
@@ -2076,7 +2309,11 @@ def ensure_linked_services_from_config(adf_client, rg, factory, config: dict, ct
 
     # Source (Blob)
     src = (config or {}).get("source", {}) or {}
-    blob_ls = src.get("linked_service") or os.getenv("ADF_BLOB_LINKED_SERVICE") or "AzureBlobStorage_LS"
+    sink = (config or {}).get("sink", {})  or {}
+    # Blob LS
+    blob_ls = src.get("linked_service") or os.getenv("ADF_BLOB_LINKED_SERVICE") or BLOB_LS_DEFAULT
+    # Snowflake LS
+    snowflake_ls = sink.get("linked_service") or os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE") or SNOWFLAKE_LS_DEFAULT
     storage_account_name = ctx.get("storage_account_name") or os.getenv("STORAGE_ACCOUNT_NAME")
     storage_key = ctx.get("storage_account_key") or os.getenv("STORAGE_ACCOUNT_KEY")
 
@@ -2084,7 +2321,6 @@ def ensure_linked_services_from_config(adf_client, rg, factory, config: dict, ct
         adf_client, rg, factory, blob_ls, storage_account_name, storage_key
     )
     if not ok and issue:
-        # also include which linked service name we were trying to create
         issue["linked_service_name"] = blob_ls
         issues.append(issue)
 
@@ -2093,9 +2329,16 @@ def ensure_linked_services_from_config(adf_client, rg, factory, config: dict, ct
     snowflake_ls = sink.get("linked_service") or os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE") or "Snowflake_LS"
     snowflake_conn = ctx.get("snowflake_connection_string") or os.getenv("SNOWFLAKE_CONNECTION_STRING")
 
+    # Fail fast with a clear message so the UI can direct the user to /ui/secrets
+    if not snowflake_conn:
+        raise RuntimeError(
+            "Snowflake connection string not provided. "
+            "Set SNOWFLAKE_CONNECTION_STRING in /ui/secrets or pass 'snowflake_connection_string' in context."
+        )
     ok, issue = ensure_snowflake_linked_service(
         adf_client, rg, factory, snowflake_ls, snowflake_conn
     )
+
     if not ok and issue:
         issue["linked_service_name"] = snowflake_ls
         issues.append(issue)
@@ -2134,7 +2377,6 @@ def ensure_snowflake_table_dataset(adf_client, rg, factory, dataset_name: str, s
                                    table: str):
     if _dataset_exists(adf_client, rg, factory, dataset_name):
         return
-    # Split schema.table if given
     schema = None
     table_name = table
     if "." in table:
@@ -2156,41 +2398,66 @@ def ensure_snowflake_table_dataset(adf_client, rg, factory, dataset_name: str, s
     adf_client.datasets.create_or_update(rg, factory, dataset_name, {"properties": props})
 
 
-def ensure_datasets_from_config(adf_client, rg, factory, config: dict):
+def ensure_datasets_from_config(adf_client, rg, factory, config: dict, ctx: dict):
     """
-    Create default datasets 'SourceDataset' and 'SinkDataset' from config if missing.
-    Infers blob container/path/file from source.path (e.g., 'mycontainer/sales.csv' or 'mycontainer/folder/file.csv')
+    Create datasets using names and locations from ctx first, then config.
+    We do NOT invent defaults (like 'mycontainer/sales.csv'); if required
+    parts are missing, we simply return and let /precheck surface missing inputs.
     """
+    # Resolve LS names
     src = (config or {}).get("source", {}) or {}
     sink = (config or {}).get("sink", {}) or {}
-    blob_ls = src.get("linked_service") or os.getenv("ADF_BLOB_LINKED_SERVICE") or "AzureBlobStorage_LS"
-    snowflake_ls = sink.get("linked_service") or os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE") or "Snowflake_LS"
 
-    # Parse source path -> container, (optional) folder, file
-    src_path = src.get("path") or ""
-    parts = [p for p in src_path.split("/") if p]
-    container = parts[0] if len(parts) >= 1 else "mycontainer"
-    file_name = parts[-1] if len(parts) >= 2 else "sales.csv"
+    blob_ls = src.get("linked_service") or os.getenv("ADF_BLOB_LINKED_SERVICE") or BLOB_LS_DEFAULT
+    snowflake_ls = sink.get("linked_service") or os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE") or SNOWFLAKE_LS_DEFAULT
+
+    # Dataset names (LLM may set them; else from ctx; else canonical)
+    source_ds = src.get("dataset_name") or ctx.get("source_dataset_name") or SRC_DS_DEFAULT
+    sink_ds   = sink.get("dataset_name") or ctx.get("sink_dataset_name") or SNK_DS_DEFAULT
+
+    # Blob location: prefer explicit ctx
+    container   = ctx.get("container")  or os.getenv("BLOB_CONTAINER")
+    blob_name   = ctx.get("blob_name")  or os.getenv("BLOB_NAME")
     folder_path = ""
-    if len(parts) > 2:
-        # everything between container and file
-        folder_path = "/".join(parts[1:-1])
 
-    ensure_blob_csv_dataset(
-        adf_client, rg, factory,
-        dataset_name="SourceDataset",
-        blob_ls_name=blob_ls,
-        container=container,
-        file_name=file_name,
-        folder_path=folder_path
-    )
+    # If still missing, try parsing config source.path (e.g., "cont/folder/file.csv")
+    if (not container or not blob_name) and src.get("path"):
+        parts = [p for p in src["path"].split("/") if p]
+        if parts:
+            container = container or parts[0]
+            if len(parts) >= 2:
+                blob_name = blob_name or parts[-1]
+            if len(parts) > 2:
+                folder_path = "/".join(parts[1:-1])
 
-    ensure_snowflake_table_dataset(
-        adf_client, rg, factory,
-        dataset_name="SinkDataset",
-        snowflake_ls_name=snowflake_ls,
-        table=sink.get("table") or "finance.daily_sales"
-    )
+    # If we still don't have a usable blob location, do nothing here.
+    # /precheck and auto-fix will request/repair inputs instead of guessing.
+    if container and blob_name:
+        ensure_blob_csv_dataset(
+            adf_client, rg, factory,
+            dataset_name=source_ds,
+            blob_ls_name=blob_ls,
+            container=container,
+            file_name=blob_name,
+            folder_path=folder_path
+        )
+
+    # Snowflake table: prefer config; else build from ctx schema/table; else skip
+    table_qualified = sink.get("table")
+    if not table_qualified:
+        schema = ctx.get("snowflake_schema")
+        table  = ctx.get("snowflake_table")
+        if schema and table:
+            table_qualified = f"{schema}.{table}"
+
+    if table_qualified:
+        ensure_snowflake_table_dataset(
+            adf_client, rg, factory,
+            dataset_name=sink_ds,
+            snowflake_ls_name=snowflake_ls,
+            table=table_qualified
+        )
+
 
 
 # ---------- Public: Deploy Pipeline ----------
@@ -2211,14 +2478,17 @@ def deploy_to_adf(pipeline_json_path: str, config: dict, ctx: dict):
 
     pipeline_name = pipeline_data.get("name", "GeneratedPipeline")
 
-    subscription_id = os.getenv("AZURE_SUBSCRIPTION_ID")
-    resource_group = os.getenv("AZURE_RESOURCE_GROUP")
-    factory_name = os.getenv("AZURE_FACTORY_NAME")
+    subscription_id = ctx.get("subscription_id") or os.getenv("AZURE_SUBSCRIPTION_ID")
+    resource_group  = ctx.get("resource_group")  or os.getenv("AZURE_RESOURCE_GROUP")
+    factory_name    = ctx.get("factory_name")    or os.getenv("AZURE_FACTORY_NAME")
 
     if not all([subscription_id, resource_group, factory_name]):
         raise RuntimeError("Azure env vars missing: AZURE_SUBSCRIPTION_ID, AZURE_RESOURCE_GROUP, AZURE_FACTORY_NAME")
 
-    credential = DefaultAzureCredential()
+    credential = ChainedTokenCredential(
+        DefaultAzureCredential(exclude_cli_credential=False),
+        InteractiveBrowserCredential()
+    )
     adf_client = DataFactoryManagementClient(credential, subscription_id)
 
     # Ensure Linked Services
@@ -2230,8 +2500,8 @@ def deploy_to_adf(pipeline_json_path: str, config: dict, ctx: dict):
             "issues": issues
         }
 
-    # Ensure Datasets
-    ensure_datasets_from_config(adf_client, resource_group, factory_name, config)
+    # Ensure Datasets (now requires ctx)
+    ensure_datasets_from_config(adf_client, resource_group, factory_name, config, ctx)
 
     # Deploy Pipeline
     result = adf_client.pipelines.create_or_update(
@@ -2240,10 +2510,23 @@ def deploy_to_adf(pipeline_json_path: str, config: dict, ctx: dict):
         pipeline_name=pipeline_name,
         pipeline={"properties": pipeline_data["properties"]}
     )
+
+    # 🔔 Ensure schedule trigger if requested
+    trigger_result = None
+    schedule_str = (config or {}).get("schedule", "once")
+    try:
+        trigger_result = ensure_schedule_trigger(
+            adf_client, resource_group, factory_name, pipeline_name, schedule_str
+        )
+    except Exception as e:
+        # Don't fail the deployment just because scheduling failed
+        trigger_result = {"error": f"trigger_setup_failed: {e}", "schedule": schedule_str}
+
     return {
         "status": "deployed",
         "pipeline_name": pipeline_name,
-        "result": str(result)
+        "result": str(result),
+        "trigger_result": trigger_result
     }
 
 ================================================================================
@@ -2253,105 +2536,72 @@ def deploy_to_adf(pipeline_json_path: str, config: dict, ctx: dict):
 import json
 import os
 import datetime
-from jsonschema import validate, ValidationError
 
 def validate_pipeline_hooks(pipeline):
-    # ✅ Hook 1: Required keys
-    if "name" not in pipeline or "properties" not in pipeline:
-        return False, "Missing required keys: 'name' or 'properties'"
-
-    # ✅ Hook 2: Activities must exist
-    activities = pipeline["properties"].get("activities", [])
-    if not isinstance(activities, list) or not activities:
-        return False, "Pipeline must include a non-empty 'activities' list"
-
-    # ✅ Hook 3: Each activity must have 'name' and 'type'
-    for act in activities:
-        if "name" not in act or "type" not in act:
-            return False, f"Activity missing 'name' or 'type': {act}"
-
-    # ✅ Hook 4: No duplicate activity names
-    names = [a["name"] for a in activities]
-    if len(names) != len(set(names)):
-        return False, "Duplicate activity names found"
-
-    # ✅ Hook 5: Warn on unknown activity types
-    known_types = ["Copy", "ExecutePipeline", "ExecuteDataFlow"]
-    for act in activities:
-        if act["type"] not in known_types:
-            print(f"⚠️ Warning: Unrecognized activity type: {act['type']}")
-
-    return True, "Validation successful"
+    """
+    Minimal structural validation used by the Flask app.
+    Ensures 'properties' and at least one activity exist.
+    """
+    try:
+        props = pipeline.get("properties", {})
+        activities = props.get("activities", [])
+        if not isinstance(activities, list) or not activities:
+            return False, "Pipeline has no activities."
+        return True, "Validation successful"
+    except Exception as e:
+        return False, f"Validation error: {e}"
 
 def deploy_pipeline_simulator(pipeline_path):
+    """
+    Offline simulator: loads a pipeline JSON, validates, and stores optional feedback.
+    This is only for local testing; not called by the Flask app in normal flow.
+    """
     if not os.path.exists(pipeline_path):
         print(f"❌ File not found: {pipeline_path}")
         return
 
-    with open(pipeline_path, 'r') as f:
-        try:
-            pipeline = json.load(f)
-        except json.JSONDecodeError as e:
-            print("❌ Invalid JSON:", e)
-            return
+    with open(pipeline_path, "r", encoding="utf-8") as f:
+        pipeline = json.load(f)
 
-    print("\n✅ SIMULATION: Pipeline JSON loaded successfully")
-    print("📌 Pipeline Name:", pipeline.get("name", "<Unnamed>"))
-
-    # ✅ Ensure logs directory exists
-    logs_dir = os.path.join(os.path.dirname(__file__), "..", "logs")
-    os.makedirs(logs_dir, exist_ok=True)
-
-    # ✅ Run validation hooks
-    is_valid, message = validate_pipeline_hooks(pipeline)
-    if not is_valid:
-        print(f"❌ Validation failed: {message}")
-        invalid_log_path = os.path.join(logs_dir, "invalid_pipelines.jsonl")
-        log_entry = {
-            "timestamp": datetime.datetime.now().isoformat(),
-            "pipeline": pipeline.get("name", "<Unknown>"),
-            "activities": [a.get("name", "") for a in pipeline.get("properties", {}).get("activities", [])],
-            "error": message,
-            "source_file": pipeline_path
-        }
-        with open(invalid_log_path, "a") as log_file:
-            log_file.write(json.dumps(log_entry) + "\n")
-        print(f"📄 Validation error logged to: {os.path.abspath(invalid_log_path)}\n")
+    ok, msg = validate_pipeline_hooks(pipeline)
+    if not ok:
+        print(f"❌ Validation failed: {msg}")
         return
-    else:
-        print(f"✅ Validation passed: {message}")
-        activities = pipeline.get("properties", {}).get("activities", [])
-        success_log_path = os.path.join(logs_dir, "successful_pipelines.jsonl")
-        success_entry = {
-            "timestamp": datetime.datetime.now().isoformat(),
-            "pipeline": pipeline.get("name", "<Unnamed>"),
-            "activities": [a.get("name", "") for a in activities],
-            "status": "validated",
-            "source_file": pipeline_path
-        }
-        with open(success_log_path, "a") as log_file:
-            log_file.write(json.dumps(success_entry) + "\n")
-        print(f"📄 Successful validation logged to: {os.path.abspath(success_log_path)}")
 
-    # ✅ Optional manual feedback
-    feedback = input("\n📝 Optional feedback for this pipeline? (press Enter to skip): ")
-    feedback_log_path = os.path.join(logs_dir, "feedback_logs.json")
+    props = pipeline.get("properties", {})
+    activities = props.get("activities", [])
+    print(f"✅ Valid pipeline: {pipeline.get('name','<Unnamed>')} with {len(activities)} activity(ies).")
+
+    # Optional feedback
+    feedback = ""
+    if os.getenv("CI", "false").lower() != "true":
+        try:
+            feedback = input("\n📝 Optional feedback for this pipeline? (press Enter to skip): ")
+        except EOFError:
+            feedback = ""
+    else:
+        print("\nCI mode detected; skipping interactive feedback.")
+
+    # Ensure logs dir exists
+    logs_dir = "logs"
+    os.makedirs(logs_dir, exist_ok=True)
+    feedback_log_path = os.path.join(logs_dir, "feedback_logs.jsonl")
     log_entry = {
-        "timestamp": datetime.datetime.now().isoformat(),
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
         "pipeline": pipeline.get("name", "<Unnamed>"),
         "activities": [a.get("name", "") for a in activities],
         "feedback": feedback
     }
-    with open(feedback_log_path, "a") as log_file:
+    with open(feedback_log_path, "a", encoding="utf-8") as log_file:
         log_file.write(json.dumps(log_entry) + "\n")
-    print(f"📄 Feedback saved to: {os.path.abspath(feedback_log_path)}\n")
+    print(f"📄 Feedback saved to: {os.path.abspath(feedback_log_path)}")
 
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
-        print("❌ Usage: python3 deploy_simulator.py <pipeline_file.json>")
-    else:
-        deploy_pipeline_simulator(sys.argv[1])
+        print("Usage: python -m pipeline_generator.deploy_simulator <pipeline_json_path>")
+        raise SystemExit(1)
+    deploy_pipeline_simulator(sys.argv[1])
 
 ================================================================================
 
@@ -2359,29 +2609,22 @@ if __name__ == "__main__":
 ================================================================================
 """
 Self-sufficient prerequisites checker + auto-fixer for ADF deployments.
-
-- check_prerequisites(context)  -> report (present/missing/errors + how_to_fix)
-- auto_fix_prereqs(context, initial_report) -> (fixed_any, actions)
-
-Auto-fix can create (when inputs are provided):
-- Azure Blob Linked Service
-- Snowflake Linked Service (requires snowflake_connection_string)
-- Source Dataset (Blob CSV)
-- Sink Dataset (Snowflake table)
 """
-
 from typing import Dict, Any, List, Tuple
 import os
 
-from azure.identity import DefaultAzureCredential
+from azure.identity import DefaultAzureCredential, InteractiveBrowserCredential, ChainedTokenCredential
 from azure.mgmt.subscription import SubscriptionClient
 from azure.mgmt.resource import ResourceManagementClient
 from azure.mgmt.datafactory import DataFactoryManagementClient
 from azure.mgmt.storage import StorageManagementClient
 from azure.storage.blob import BlobServiceClient
+from utils.settings import (
+    BLOB_LS_DEFAULT, SNOWFLAKE_LS_DEFAULT, SRC_DS_DEFAULT, SNK_DS_DEFAULT,
+    CSV_DELIMITER_DEFAULT, CSV_HEADER_DEFAULT, REGION_FALLBACK
+)
 
 # ----------------------------- helpers -----------------------------
-
 def _ok(item: str, details: Dict[str, Any] = None):
     return {"item": item, "status": "present", "details": details or {}}
 
@@ -2404,6 +2647,8 @@ def _finish(items: List[Dict[str, Any]]) -> Dict[str, Any]:
 # ----------------------------- check -----------------------------
 
 def check_prerequisites(context: Dict[str, Any]) -> Dict[str, Any]:
+    report: List[Dict[str, Any]] = []
+
     # Resolve config from context or env
     subscription_id = context.get("subscription_id") or os.getenv("AZURE_SUBSCRIPTION_ID")
     resource_group  = context.get("resource_group")  or os.getenv("AZURE_RESOURCE_GROUP")
@@ -2411,102 +2656,131 @@ def check_prerequisites(context: Dict[str, Any]) -> Dict[str, Any]:
 
     storage_account_name = context.get("storage_account_name") or os.getenv("STORAGE_ACCOUNT_NAME")
     storage_account_key  = context.get("storage_account_key")  or os.getenv("STORAGE_ACCOUNT_KEY")
-    container_name       = context.get("container") or "mycontainer"
-    blob_name            = context.get("blob_name") or "sales.csv"
+    container_name = context.get("container") or os.getenv("BLOB_CONTAINER")
+    blob_name      = context.get("blob_name") or os.getenv("BLOB_NAME")
 
-    blob_ls_name        = context.get("blob_ls_name") or os.getenv("ADF_BLOB_LINKED_SERVICE") or "AzureBlobStorageLinkedService"
-    snowflake_ls_name   = context.get("snowflake_ls_name") or os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE") or "Snowflake_LS"
-    source_dataset_name = context.get("source_dataset_name") or "SourceDataset"
-    sink_dataset_name   = context.get("sink_dataset_name") or "SinkDataset"
+    blob_ls_name        = context.get("blob_ls_name") or os.getenv("ADF_BLOB_LINKED_SERVICE") or BLOB_LS_DEFAULT
+    snowflake_ls_name   = context.get("snowflake_ls_name") or os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE") or SNOWFLAKE_LS_DEFAULT
+    source_dataset_name = context.get("source_dataset_name") or SRC_DS_DEFAULT
+    sink_dataset_name   = context.get("sink_dataset_name") or SNK_DS_DEFAULT
 
-    report: List[Dict[str, Any]] = []
-
-    # sanity
+    # --------- sanity (collect all hard-missing and return early) ----------
+    hard_missing = []
     if not subscription_id:
-        report.append(_missing("subscription_id", "Set AZURE_SUBSCRIPTION_ID or include 'subscription_id' in context"))
-        return _finish(report)
+        hard_missing.append(_missing("subscription_id", "Set AZURE_SUBSCRIPTION_ID or include 'subscription_id' in context"))
     if not resource_group:
-        report.append(_missing("resource_group", "Set AZURE_RESOURCE_GROUP or include 'resource_group' in context"))
-        return _finish(report)
+        hard_missing.append(_missing("resource_group", "Set AZURE_RESOURCE_GROUP or include 'resource_group' in context"))
     if not factory_name:
-        report.append(_missing("factory_name", "Set AZURE_FACTORY_NAME or include 'factory_name' in context"))
+        hard_missing.append(_missing("factory_name", "Set AZURE_FACTORY_NAME or include 'factory_name' in context"))
+
+    if hard_missing:
+        report.extend(hard_missing)
         return _finish(report)
 
-    # clients
+    # --------- clients (with browser fallback) ----------
     try:
-        credential = DefaultAzureCredential()
-        sub_client = SubscriptionClient(credential)
-        res_client = ResourceManagementClient(credential, subscription_id)
-        adf_client = DataFactoryManagementClient(credential, subscription_id)
+        credential = ChainedTokenCredential(
+            DefaultAzureCredential(exclude_cli_credential=False),
+            InteractiveBrowserCredential()
+        )
+        sub_client  = SubscriptionClient(credential)
+        res_client  = ResourceManagementClient(credential, subscription_id)
+        adf_client  = DataFactoryManagementClient(credential, subscription_id)
         stor_client = StorageManagementClient(credential, subscription_id)
-        report.append(_ok("credentials", {"type": "DefaultAzureCredential"}))
+        report.append(_ok("credentials", {"type": "ChainedTokenCredential"}))
     except Exception as e:
         report.append(_error("credentials", f"Auth failed: {e}"))
         return _finish(report)
 
-    # subscription (robust)
+    # --------- subscription (robust) ----------
     try:
         subs = list(sub_client.subscriptions.list())
         if any(getattr(s, "subscription_id", "") == subscription_id for s in subs):
             report.append(_ok("subscription", {"subscription_id": subscription_id}))
         else:
-            report.append(_missing("subscription", "az account set --subscription <id>", {"subscription_id": subscription_id}))
+            report.append(_missing("subscription",
+                                   "az account set --subscription <id>",
+                                   {"subscription_id": subscription_id}))
             return _finish(report)
     except Exception as e:
+        # Non-fatal if enumeration fails, but still record the id
         report.append(_ok("subscription", {"subscription_id": subscription_id, "note": f"Could not enumerate ({e})"}))
 
-    # providers check (coarse)
+    # --------- providers (coarse) ----------
     try:
         list(adf_client.factories.list())
         list(stor_client.storage_accounts.list())
         report.append(_ok("providers", {"Microsoft.DataFactory": "ok", "Microsoft.Storage": "ok"}))
     except Exception as e:
-        report.append(_missing("providers",
-                               "az provider register --namespace Microsoft.DataFactory && az provider register --namespace Microsoft.Storage",
-                               {"error": str(e)}))
+        report.append(_missing(
+            "providers",
+            "az provider register --namespace Microsoft.DataFactory && az provider register --namespace Microsoft.Storage",
+            {"error": str(e)}
+        ))
 
-    # RG
+    # --------- resource group ----------
     try:
         rg = res_client.resource_groups.get(resource_group)
         report.append(_ok("resource_group", {"name": rg.name, "location": rg.location}))
     except Exception as e:
-        report.append(_missing("resource_group", f"az group create -n {resource_group} -l westeurope", {"error": str(e)}))
+        report.append(_missing(
+            "resource_group",
+            f"az group create -n {resource_group} -l <your-region>",
+            {"error": str(e)}
+        ))
         return _finish(report)
 
-    # ADF
+    # --------- data factory ----------
     try:
         factory = adf_client.factories.get(resource_group, factory_name)
         report.append(_ok("data_factory", {"name": factory.name, "location": factory.location}))
     except Exception as e:
-        report.append(_missing("data_factory", f"az datafactory create -g {resource_group} -n {factory_name} -l westeurope", {"error": str(e)}))
+        report.append(_missing(
+            "data_factory",
+            f"az datafactory create -g {resource_group} -n {factory_name} -l <your-region>",
+            {"error": str(e)}
+        ))
         return _finish(report)
 
-    # Storage (optional but useful)
+    # --------- storage account existence (ARM) ----------
     if storage_account_name:
         try:
             acct = stor_client.storage_accounts.get_properties(resource_group, storage_account_name)
             report.append(_ok("storage_account", {"name": acct.name, "location": acct.location}))
         except Exception as e:
-            report.append(_missing("storage_account", f"az storage account create -g {resource_group} -n {storage_account_name} -l westeurope --sku Standard_LRS --kind StorageV2",
-                                   {"error": str(e)}))
-        # data plane if key present
+            report.append(_missing(
+                "storage_account",
+                f"az storage account create -g {resource_group} -n {storage_account_name} -l <your-region> --sku Standard_LRS --kind StorageV2",
+                {"error": str(e)}
+            ))
+        # Data plane check if key present
         if storage_account_key:
             try:
                 endpoint = f"https://{storage_account_name}.blob.core.windows.net"
                 bsc = BlobServiceClient(account_url=endpoint, credential=storage_account_key)
                 containers = [c['name'] if isinstance(c, dict) else c.name for c in bsc.list_containers()]
-                if container_name in containers:
-                    report.append(_ok("blob_container", {"name": container_name}))
-                    blob_names = [b.name for b in bsc.get_container_client(container_name).list_blobs()]
-                    if blob_name in blob_names:
-                        report.append(_ok("blob_exists", {"name": blob_name}))
+                if container_name:
+                    if container_name in containers:
+                        report.append(_ok("blob_container", {"name": container_name}))
+                        if blob_name:
+                            blob_names = [b.name for b in bsc.get_container_client(container_name).list_blobs()]
+                            if blob_name in blob_names:
+                                report.append(_ok("blob_exists", {"name": blob_name}))
+                            else:
+                                report.append(_missing(
+                                    "blob_exists",
+                                    f"az storage blob upload --account-name {storage_account_name} --account-key <KEY> "
+                                    f"--container-name {container_name} --name {blob_name} --file ./sales.csv"
+                                ))
+                        else:
+                            report.append(_missing("blob_name", "Provide blob file name in context or env (BLOB_NAME)."))
                     else:
-                        report.append(_missing("blob_exists",
-                                               f"az storage blob upload --account-name {storage_account_name} --account-key <KEY> "
-                                               f"--container-name {container_name} --name {blob_name} --file ./sales.csv"))
+                        report.append(_missing(
+                            "blob_container",
+                            f"az storage container create --account-name {storage_account_name} --account-key <KEY> --name {container_name}"
+                        ))
                 else:
-                    report.append(_missing("blob_container",
-                                           f"az storage container create --account-name {storage_account_name} --account-key <KEY> --name {container_name}"))
+                    report.append(_missing("container", "Provide blob container name in context or env (BLOB_CONTAINER)."))
             except Exception as e:
                 report.append(_error("blob_data_plane", f"Blob data-plane access failed: {e}"))
         else:
@@ -2514,31 +2788,43 @@ def check_prerequisites(context: Dict[str, Any]) -> Dict[str, Any]:
     else:
         report.append(_missing("storage_account_name", "Provide 'storage_account_name' in context or env."))
 
-    # Linked Services
+    # --------- linked services ----------
     try:
         ls_names = {ls.name for ls in adf_client.linked_services.list_by_factory(resource_group, factory_name)}
         if blob_ls_name in ls_names:
             report.append(_ok("blob_linked_service", {"name": blob_ls_name}))
         else:
-            report.append(_missing("blob_linked_service", f"Create Blob LS '{blob_ls_name}' (connection string SecureString or Managed Identity)."))
+            report.append(_missing(
+                "blob_linked_service",
+                f"Create Blob LS '{blob_ls_name}' (connection string SecureString or Managed Identity)."
+            ))
         if snowflake_ls_name in ls_names:
             report.append(_ok("snowflake_linked_service", {"name": snowflake_ls_name}))
         else:
-            report.append(_missing("snowflake_linked_service", f"Create Snowflake LS '{snowflake_ls_name}' with a valid JDBC-like connection string."))
+            report.append(_missing(
+                "snowflake_linked_service",
+                f"Create Snowflake LS '{snowflake_ls_name}' with a valid JDBC-like connection string."
+            ))
     except Exception as e:
         report.append(_error("linked_services", f"List failed: {e}"))
 
-    # Datasets
+    # --------- datasets ----------
     try:
         ds_names = {ds.name for ds in adf_client.datasets.list_by_factory(resource_group, factory_name)}
         if source_dataset_name in ds_names:
             report.append(_ok("source_dataset", {"name": source_dataset_name}))
         else:
-            report.append(_missing("source_dataset", f"Create dataset '{source_dataset_name}' (Blob CSV) referencing '{blob_ls_name}'."))
+            report.append(_missing(
+                "source_dataset",
+                f"Create dataset '{source_dataset_name}' (Blob CSV) referencing '{blob_ls_name}'."
+            ))
         if sink_dataset_name in ds_names:
             report.append(_ok("sink_dataset", {"name": sink_dataset_name}))
         else:
-            report.append(_missing("sink_dataset", f"Create dataset '{sink_dataset_name}' (Snowflake table) referencing '{snowflake_ls_name}'."))
+            report.append(_missing(
+                "sink_dataset",
+                f"Create dataset '{sink_dataset_name}' (Snowflake table) referencing '{snowflake_ls_name}'."
+            ))
     except Exception as e:
         report.append(_error("datasets", f"List failed: {e}"))
 
@@ -2550,6 +2836,7 @@ def auto_fix_prereqs(context: Dict[str, Any], initial_report: Dict[str, Any]) ->
     """
     Tries to auto-create missing Linked Services and Datasets if enough context is provided.
     Returns (fixed_any, actions[]) where each action is {item, action, status, details|error}.
+    Never guesses object names; skips and reports missing input instead.
     """
     subscription_id = context.get("subscription_id") or os.getenv("AZURE_SUBSCRIPTION_ID")
     resource_group  = context.get("resource_group")  or os.getenv("AZURE_RESOURCE_GROUP")
@@ -2557,128 +2844,179 @@ def auto_fix_prereqs(context: Dict[str, Any], initial_report: Dict[str, Any]) ->
 
     storage_account_name = context.get("storage_account_name") or os.getenv("STORAGE_ACCOUNT_NAME")
     storage_account_key  = context.get("storage_account_key")  or os.getenv("STORAGE_ACCOUNT_KEY")
-    container_name       = context.get("container") or "mycontainer"
-    blob_name            = context.get("blob_name") or "sales.csv"
+    container_name       = context.get("container") or os.getenv("BLOB_CONTAINER")
+    blob_name            = context.get("blob_name") or os.getenv("BLOB_NAME")
 
-    blob_ls_name        = context.get("blob_ls_name") or os.getenv("ADF_BLOB_LINKED_SERVICE") or "AzureBlobStorageLinkedService"
-    snowflake_ls_name   = context.get("snowflake_ls_name") or os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE") or "Snowflake_LS"
-    source_dataset_name = context.get("source_dataset_name") or "SourceDataset"
-    sink_dataset_name   = context.get("sink_dataset_name") or "SinkDataset"
+    blob_ls_name        = context.get("blob_ls_name") or os.getenv("ADF_BLOB_LINKED_SERVICE") or BLOB_LS_DEFAULT
+    snowflake_ls_name   = context.get("snowflake_ls_name") or os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE") or SNOWFLAKE_LS_DEFAULT
+    source_dataset_name = context.get("source_dataset_name") or SRC_DS_DEFAULT
+    sink_dataset_name   = context.get("sink_dataset_name") or SNK_DS_DEFAULT
 
-    snowflake_conn_str  = context.get("snowflake_connection_string") or os.getenv("SNOWFLAKE_CS")
-    snowflake_schema    = context.get("snowflake_schema", "finance")
-    snowflake_table     = context.get("snowflake_table", "daily_sales")
+    snowflake_conn_str  = context.get("snowflake_connection_string") or os.getenv("SNOWFLAKE_CONNECTION_STRING")
+    snowflake_schema    = context.get("snowflake_schema") or os.getenv("SNOWFLAKE_SCHEMA")
+    snowflake_table     = context.get("snowflake_table")  or os.getenv("SNOWFLAKE_TABLE")
 
     actions: List[Dict[str, Any]] = []
     fixed_any = False
 
-    # Build clients
+    # --- Hard prerequisite sanity: without these we cannot call ADF at all ---
+    missing_bootstrap = [k for k, v in [
+        ("subscription_id", subscription_id),
+        ("resource_group",  resource_group),
+        ("factory_name",    factory_name),
+    ] if not v]
+    if missing_bootstrap:
+        actions.append({
+            "item": "bootstrap",
+            "action": "verify_context",
+            "status": "skipped",
+            "error": f"Missing: {', '.join(missing_bootstrap)}"
+        })
+        return False, actions
+
+    # Build client
     try:
-        credential = DefaultAzureCredential()
+        credential = ChainedTokenCredential(
+            DefaultAzureCredential(exclude_cli_credential=False),
+            InteractiveBrowserCredential()
+        )
         adf_client = DataFactoryManagementClient(credential, subscription_id)
     except Exception as e:
         actions.append({"item": "credentials", "action": "init_clients", "status": "error", "error": str(e)})
         return False, actions
 
-    # Helper to see what's missing from initial_report
+    # Helper: what was missing according to initial_report
     missing_items = {i["item"] for i in initial_report.get("summary", {}).get("missing", [])}
 
     # 1) Blob Linked Service
-    if "blob_linked_service" in missing_items and storage_account_name and storage_account_key:
-        conn_str = f"DefaultEndpointsProtocol=https;AccountName={storage_account_name};AccountKey={storage_account_key};EndpointSuffix=core.windows.net"
-        try:
-            adf_client.linked_services.create_or_update(
-                resource_group,
-                factory_name,
-                blob_ls_name,
-                {"properties": {
-                    "type": "AzureBlobStorage",
-                    "typeProperties": {
-                        "connectionString": {"type": "SecureString", "value": conn_str}
-                    }
-                }}
+    if "blob_linked_service" in missing_items:
+        if storage_account_name and storage_account_key:
+            conn_str = (
+                f"DefaultEndpointsProtocol=https;"
+                f"AccountName={storage_account_name};"
+                f"AccountKey={storage_account_key};"
+                f"EndpointSuffix=core.windows.net"
             )
-            actions.append({"item": "blob_linked_service", "action": "create_or_update", "status": "created",
-                            "details": {"name": blob_ls_name}})
-            fixed_any = True
-        except Exception as e:
-            actions.append({"item": "blob_linked_service", "action": "create_or_update", "status": "error", "error": str(e)})
+            try:
+                adf_client.linked_services.create_or_update(
+                    resource_group,
+                    factory_name,
+                    blob_ls_name,
+                    {"properties": {
+                        "type": "AzureBlobStorage",
+                        "typeProperties": {
+                            "connectionString": {"type": "SecureString", "value": conn_str}
+                        }
+                    }}
+                )
+                actions.append({"item": "blob_linked_service", "action": "create_or_update", "status": "created",
+                                "details": {"name": blob_ls_name}})
+                fixed_any = True
+            except Exception as e:
+                actions.append({"item": "blob_linked_service", "action": "create_or_update", "status": "error", "error": str(e)})
+        else:
+            miss = []
+            if not storage_account_name: miss.append("storage_account_name")
+            if not storage_account_key:  miss.append("storage_account_key")
+            actions.append({"item": "blob_linked_service", "action": "skipped", "status": "missing_input",
+                            "error": f"Missing required inputs: {', '.join(miss) or 'unknown'}"})
 
     # 2) Snowflake Linked Service (only if connection string provided)
-    if "snowflake_linked_service" in missing_items and snowflake_conn_str:
-        try:
-            adf_client.linked_services.create_or_update(
-                resource_group,
-                factory_name,
-                snowflake_ls_name,
-                {"properties": {
-                    "type": "Snowflake",
-                    "typeProperties": {
-                        "connectionString": {"type": "SecureString", "value": snowflake_conn_str}
-                    }
-                }}
-            )
-            actions.append({"item": "snowflake_linked_service", "action": "create_or_update", "status": "created",
-                            "details": {"name": snowflake_ls_name}})
-            fixed_any = True
-        except Exception as e:
-            actions.append({"item": "snowflake_linked_service", "action": "create_or_update", "status": "error", "error": str(e)})
-    elif "snowflake_linked_service" in missing_items and not snowflake_conn_str:
-        actions.append({"item": "snowflake_linked_service", "action": "skipped", "status": "missing_input",
-                        "error": "snowflake_connection_string not provided"})
+    if "snowflake_linked_service" in missing_items:
+        if snowflake_conn_str:
+            try:
+                adf_client.linked_services.create_or_update(
+                    resource_group,
+                    factory_name,
+                    snowflake_ls_name,
+                    {"properties": {
+                        "type": "SnowflakeV2",
+                        "typeProperties": {
+                            "connectionString": {"type": "SecureString", "value": snowflake_conn_str}
+                        }
+                    }}
+                )
+                actions.append({"item": "snowflake_linked_service", "action": "create_or_update", "status": "created",
+                                "details": {"name": snowflake_ls_name}})
+                fixed_any = True
+            except Exception as e:
+                actions.append({"item": "snowflake_linked_service", "action": "create_or_update", "status": "error", "error": str(e)})
+        else:
+            actions.append({"item": "snowflake_linked_service", "action": "skipped", "status": "missing_input",
+                            "error": "snowflake_connection_string not provided"})
 
-    # 3) Source Dataset (Blob CSV)
-    if "source_dataset" in missing_items and blob_ls_name and container_name and blob_name:
-        try:
-            adf_client.datasets.create_or_update(
-                resource_group,
-                factory_name,
-                source_dataset_name,
-                {"properties": {
-                    "linkedServiceName": {"referenceName": blob_ls_name, "type": "LinkedServiceReference"},
-                    "type": "DelimitedText",
-                    "typeProperties": {
-                        "location": {
-                            "type": "AzureBlobStorageLocation",
-                            "container": container_name,
-                            "fileName": blob_name
+    # 3) Source Dataset (Blob CSV) — no guessing
+    if "source_dataset" in missing_items:
+        if blob_ls_name and container_name and blob_name:
+            try:
+                adf_client.datasets.create_or_update(
+                    resource_group,
+                    factory_name,
+                    source_dataset_name,
+                    {"properties": {
+                        "linkedServiceName": {"referenceName": blob_ls_name, "type": "LinkedServiceReference"},
+                        "type": "DelimitedText",
+                        "typeProperties": {
+                            "location": {
+                                "type": "AzureBlobStorageLocation",
+                                "container": container_name,
+                                "fileName": blob_name
+                            },
+                            "columnDelimiter": ",",
+                            "firstRowAsHeader": True
                         },
-                        "columnDelimiter": ",",
-                        "firstRowAsHeader": True
-                    },
-                    "schema": []
-                }}
-            )
-            actions.append({"item": "source_dataset", "action": "create_or_update", "status": "created",
-                            "details": {"name": source_dataset_name}})
-            fixed_any = True
-        except Exception as e:
-            actions.append({"item": "source_dataset", "action": "create_or_update", "status": "error", "error": str(e)})
+                        "schema": []
+                    }}
+                )
+                actions.append({"item": "source_dataset", "action": "create_or_update", "status": "created",
+                                "details": {"name": source_dataset_name}})
+                fixed_any = True
+            except Exception as e:
+                actions.append({"item": "source_dataset", "action": "create_or_update", "status": "error", "error": str(e)})
+        else:
+            missing = []
+            if not container_name: missing.append("container")
+            if not blob_name:      missing.append("blob_name")
+            actions.append({
+                "item": "source_dataset",
+                "action": "skipped",
+                "status": "missing_input",
+                "error": f"Missing required inputs: {', '.join(missing) or 'unknown'}"
+            })
 
-    # 4) Sink Dataset (Snowflake table)
-    if "sink_dataset" in missing_items and snowflake_ls_name and snowflake_schema and snowflake_table:
-        try:
-            adf_client.datasets.create_or_update(
-                resource_group,
-                factory_name,
-                sink_dataset_name,
-                {"properties": {
-                    "linkedServiceName": {"referenceName": snowflake_ls_name, "type": "LinkedServiceReference"},
-                    "type": "SnowflakeTable",
-                    "typeProperties": {
-                        "schema": snowflake_schema,
-                        "tableName": snowflake_table
-                    }
-                }}
-            )
-            actions.append({"item": "sink_dataset", "action": "create_or_update", "status": "created",
-                            "details": {"name": sink_dataset_name}})
-            fixed_any = True
-        except Exception as e:
-            actions.append({"item": "sink_dataset", "action": "create_or_update", "status": "error", "error": str(e)})
-    elif "sink_dataset" in missing_items and not snowflake_ls_name:
-        actions.append({"item": "sink_dataset", "action": "skipped", "status": "missing_input",
-                        "error": "snowflake_ls_name not provided"})
+    # 4) Sink Dataset (Snowflake table) — no guessing
+    if "sink_dataset" in missing_items:
+        if snowflake_ls_name and snowflake_schema and snowflake_table:
+            try:
+                adf_client.datasets.create_or_update(
+                    resource_group,
+                    factory_name,
+                    sink_dataset_name,
+                    {"properties": {
+                        "linkedServiceName": {"referenceName": snowflake_ls_name, "type": "LinkedServiceReference"},
+                        "type": "SnowflakeTable",
+                        "typeProperties": {
+                            "schema": snowflake_schema,
+                            "tableName": snowflake_table
+                        }
+                    }}
+                )
+                actions.append({"item": "sink_dataset", "action": "create_or_update", "status": "created",
+                                "details": {"name": sink_dataset_name}})
+                fixed_any = True
+            except Exception as e:
+                actions.append({"item": "sink_dataset", "action": "create_or_update", "status": "error", "error": str(e)})
+        else:
+            missing = []
+            if not snowflake_ls_name: missing.append("snowflake_ls_name")
+            if not snowflake_schema:  missing.append("snowflake_schema")
+            if not snowflake_table:   missing.append("snowflake_table")
+            actions.append({
+                "item": "sink_dataset",
+                "action": "skipped",
+                "status": "missing_input",
+                "error": f"Missing required inputs: {', '.join(missing) or 'unknown'}"
+            })
 
     return fixed_any, actions
 

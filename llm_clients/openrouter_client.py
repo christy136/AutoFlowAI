@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
+from utils.settings import OPENROUTER_MODEL_DEFAULT  
 
 load_dotenv()
 
@@ -11,11 +12,10 @@ client = OpenAI(
 
 def generate_with_openrouter(prompt: str) -> str:
     try:
+        model = os.getenv("OPENROUTER_MODEL", OPENROUTER_MODEL_DEFAULT) 
         completion = client.chat.completions.create(
-            model="deepseek/deepseek-chat-v3-0324:free",
-            messages=[
-                {"role": "user", "content": prompt}
-            ],
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
             extra_headers={
                 "HTTP-Referer": os.getenv("YOUR_SITE_URL", ""),
                 "X-Title": os.getenv("YOUR_SITE_NAME", "")

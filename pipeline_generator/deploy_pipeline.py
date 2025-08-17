@@ -3,7 +3,10 @@ import json
 
 from azure.identity import DefaultAzureCredential, InteractiveBrowserCredential, ChainedTokenCredential
 from azure.mgmt.datafactory import DataFactoryManagementClient
-
+from utils.settings import (
+    BLOB_LS_DEFAULT, SNOWFLAKE_LS_DEFAULT, SRC_DS_DEFAULT, SNK_DS_DEFAULT
+)
+from datetime import datetime, timezone
 
 # ---------- Helpers ----------
 
@@ -20,7 +23,92 @@ def _dataset_exists(adf_client, rg, factory, name: str) -> bool:
         return True
     except Exception:
         return False
+# ---- Scheduling helpers ------------------------------------------------------
+def _parse_schedule_string(s: str) -> dict | None:
+    """
+    Accepts: "once", "manual", "", "daily", "daily@HH:MM"
+    Returns a dict like {"kind":"daily","hour":H,"minute":M} or None (no trigger).
+    """
+    if not s:
+        return None
+    s = str(s).strip().lower()
+    if s in {"once", "manual", "off", "disabled", "none"}:
+        return None
+    if s == "daily":
+        return {"kind": "daily", "hour": 0, "minute": 0}
+    if s.startswith("daily@"):
+        try:
+            hhmm = s.split("@", 1)[1]
+            hh, mm = hhmm.split(":", 1)
+            h = max(0, min(23, int(hh)))
+            m = max(0, min(59, int(mm)))
+            return {"kind": "daily", "hour": h, "minute": m}
+        except Exception:
+            # fall back to a daily midnight trigger if parse fails
+            return {"kind": "daily", "hour": 0, "minute": 0}
+    # If you want to expand later (hourly/cron), do it here.
+    return None
 
+
+def ensure_schedule_trigger(adf_client,
+                            resource_group: str,
+                            factory_name: str,
+                            pipeline_name: str,
+                            schedule_string: str) -> dict | None:
+    """
+    Creates/updates a ScheduleTrigger that runs the given pipeline.
+    Starts (enables) the trigger after creation.
+    Returns a small result dict or None if no trigger is needed.
+    """
+    parsed = _parse_schedule_string(schedule_string)
+    if not parsed:
+        return None  # no trigger requested
+
+    trigger_name = f"{pipeline_name}_schedule"
+    now_utc = datetime.now(timezone.utc)
+
+    if parsed["kind"] == "daily":
+        hour = int(parsed["hour"])
+        minute = int(parsed["minute"])
+
+        props = {
+            "type": "ScheduleTrigger",
+            "pipelines": [
+                {
+                    "pipelineReference": {
+                        "referenceName": pipeline_name,
+                        "type": "PipelineReference"
+                    },
+                    "parameters": {}
+                }
+            ],
+            "typeProperties": {
+                "recurrence": {
+                    "frequency": "Day",
+                    "interval": 1,
+                    "startTime": now_utc.isoformat(),  # required; immediate window OK
+                    "timeZone": "UTC",
+                    "schedule": {"hours": [hour], "minutes": [minute]}
+                }
+            }
+        }
+
+        adf_client.triggers.create_or_update(
+            resource_group_name=resource_group,
+            factory_name=factory_name,
+            trigger_name=trigger_name,
+            trigger={"properties": props}
+        )
+        # Start (enable) the trigger
+        adf_client.triggers.start(
+            resource_group_name=resource_group,
+            factory_name=factory_name,
+            trigger_name=trigger_name
+        )
+        return {"trigger": trigger_name, "status": "started", "schedule": schedule_string}
+
+    # Future kinds could be handled here
+    return None
 
 # ---------- Ensure Linked Services ----------
 
@@ -71,10 +159,10 @@ def ensure_snowflake_linked_service(adf_client, rg, factory, ls_name: str,
         }
 
     props = {
-        "type": "Snowflake",
-        "typeProperties": {
-            "connectionString": {"type": "SecureString", "value": connection_string}
-        }
+    "type": "SnowflakeV2",
+    "typeProperties": {
+        "connectionString": {"type": "SecureString", "value": connection_string}
+    }
     }
     adf_client.linked_services.create_or_update(rg, factory, ls_name, {"properties": props})
     return True, None
@@ -92,7 +180,11 @@ def ensure_linked_services_from_config(adf_client, rg, factory, config: dict, ct
 
     # Source (Blob)
     src = (config or {}).get("source", {}) or {}
-    blob_ls = src.get("linked_service") or os.getenv("ADF_BLOB_LINKED_SERVICE") or "AzureBlobStorageLinkedService"
+    sink = (config or {}).get("sink", {})  or {}
+    # Blob LS
+    blob_ls = src.get("linked_service") or os.getenv("ADF_BLOB_LINKED_SERVICE") or BLOB_LS_DEFAULT
+    # Snowflake LS
+    snowflake_ls = sink.get("linked_service") or os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE") or SNOWFLAKE_LS_DEFAULT
     storage_account_name = ctx.get("storage_account_name") or os.getenv("STORAGE_ACCOUNT_NAME")
     storage_key = ctx.get("storage_account_key") or os.getenv("STORAGE_ACCOUNT_KEY")
 
@@ -108,9 +200,16 @@ def ensure_linked_services_from_config(adf_client, rg, factory, config: dict, ct
     snowflake_ls = sink.get("linked_service") or os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE") or "Snowflake_LS"
     snowflake_conn = ctx.get("snowflake_connection_string") or os.getenv("SNOWFLAKE_CONNECTION_STRING")
 
+    # Fail fast with a clear message so the UI can direct the user to /ui/secrets
+    if not snowflake_conn:
+        raise RuntimeError(
+            "Snowflake connection string not provided. "
+            "Set SNOWFLAKE_CONNECTION_STRING in /ui/secrets or pass 'snowflake_connection_string' in context."
+        )
     ok, issue = ensure_snowflake_linked_service(
         adf_client, rg, factory, snowflake_ls, snowflake_conn
     )
+
     if not ok and issue:
         issue["linked_service_name"] = snowflake_ls
         issues.append(issue)
@@ -170,40 +269,66 @@ def ensure_snowflake_table_dataset(adf_client, rg, factory, dataset_name: str, s
     adf_client.datasets.create_or_update(rg, factory, dataset_name, {"properties": props})
 
 
-def ensure_datasets_from_config(adf_client, rg, factory, config: dict):
+def ensure_datasets_from_config(adf_client, rg, factory, config: dict, ctx: dict):
     """
-    Create default datasets 'SourceDataset' and 'SinkDataset' from config if missing.
-    Infers blob container/path/file from source.path (e.g., 'mycontainer/sales.csv' or 'mycontainer/folder/file.csv')
+    Create datasets using names and locations from ctx first, then config.
+    We do NOT invent defaults (like 'mycontainer/sales.csv'); if required
+    parts are missing, we simply return and let /precheck surface missing inputs.
     """
+    # Resolve LS names
     src = (config or {}).get("source", {}) or {}
     sink = (config or {}).get("sink", {}) or {}
-    blob_ls = src.get("linked_service") or os.getenv("ADF_BLOB_LINKED_SERVICE") or "AzureBlobStorageLinkedService"
-    snowflake_ls = sink.get("linked_service") or os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE") or "Snowflake_LS"
 
-    # Parse source path -> container, (optional) folder, file
-    src_path = src.get("path") or ""
-    parts = [p for p in src_path.split("/") if p]
-    container = parts[0] if len(parts) >= 1 else "mycontainer"
-    file_name = parts[-1] if len(parts) >= 2 else "sales.csv"
+    blob_ls = src.get("linked_service") or os.getenv("ADF_BLOB_LINKED_SERVICE") or BLOB_LS_DEFAULT
+    snowflake_ls = sink.get("linked_service") or os.getenv("ADF_SNOWFLAKE_LINKED_SERVICE") or SNOWFLAKE_LS_DEFAULT
+
+    # Dataset names (LLM may set them; else from ctx; else canonical)
+    source_ds = src.get("dataset_name") or ctx.get("source_dataset_name") or SRC_DS_DEFAULT
+    sink_ds   = sink.get("dataset_name") or ctx.get("sink_dataset_name") or SNK_DS_DEFAULT
+
+    # Blob location: prefer explicit ctx
+    container   = ctx.get("container")  or os.getenv("BLOB_CONTAINER")
+    blob_name   = ctx.get("blob_name")  or os.getenv("BLOB_NAME")
     folder_path = ""
-    if len(parts) > 2:
-        folder_path = "/".join(parts[1:-1])
 
-    ensure_blob_csv_dataset(
-        adf_client, rg, factory,
-        dataset_name="SourceDataset",
-        blob_ls_name=blob_ls,
-        container=container,
-        file_name=file_name,
-        folder_path=folder_path
-    )
+    # If still missing, try parsing config source.path (e.g., "cont/folder/file.csv")
+    if (not container or not blob_name) and src.get("path"):
+        parts = [p for p in src["path"].split("/") if p]
+        if parts:
+            container = container or parts[0]
+            if len(parts) >= 2:
+                blob_name = blob_name or parts[-1]
+            if len(parts) > 2:
+                folder_path = "/".join(parts[1:-1])
 
-    ensure_snowflake_table_dataset(
-        adf_client, rg, factory,
-        dataset_name="SinkDataset",
-        snowflake_ls_name=snowflake_ls,
-        table=sink.get("table") or "finance.daily_sales"
-    )
+    # If we still don't have a usable blob location, do nothing here.
+    # /precheck and auto-fix will request/repair inputs instead of guessing.
+    if container and blob_name:
+        ensure_blob_csv_dataset(
+            adf_client, rg, factory,
+            dataset_name=source_ds,
+            blob_ls_name=blob_ls,
+            container=container,
+            file_name=blob_name,
+            folder_path=folder_path
+        )
+
+    # Snowflake table: prefer config; else build from ctx schema/table; else skip
+    table_qualified = sink.get("table")
+    if not table_qualified:
+        schema = ctx.get("snowflake_schema")
+        table  = ctx.get("snowflake_table")
+        if schema and table:
+            table_qualified = f"{schema}.{table}"
+
+    if table_qualified:
+        ensure_snowflake_table_dataset(
+            adf_client, rg, factory,
+            dataset_name=sink_ds,
+            snowflake_ls_name=snowflake_ls,
+            table=table_qualified
+        )
+
 
 
 # ---------- Public: Deploy Pipeline ----------
@@ -224,9 +349,9 @@ def deploy_to_adf(pipeline_json_path: str, config: dict, ctx: dict):
 
     pipeline_name = pipeline_data.get("name", "GeneratedPipeline")
 
-    subscription_id = os.getenv("AZURE_SUBSCRIPTION_ID")
-    resource_group = os.getenv("AZURE_RESOURCE_GROUP")
-    factory_name = os.getenv("AZURE_FACTORY_NAME")
+    subscription_id = ctx.get("subscription_id") or os.getenv("AZURE_SUBSCRIPTION_ID")
+    resource_group  = ctx.get("resource_group")  or os.getenv("AZURE_RESOURCE_GROUP")
+    factory_name    = ctx.get("factory_name")    or os.getenv("AZURE_FACTORY_NAME")
 
     if not all([subscription_id, resource_group, factory_name]):
         raise RuntimeError("Azure env vars missing: AZURE_SUBSCRIPTION_ID, AZURE_RESOURCE_GROUP, AZURE_FACTORY_NAME")
@@ -246,8 +371,8 @@ def deploy_to_adf(pipeline_json_path: str, config: dict, ctx: dict):
             "issues": issues
         }
 
-    # Ensure Datasets
-    ensure_datasets_from_config(adf_client, resource_group, factory_name, config)
+    # Ensure Datasets (now requires ctx)
+    ensure_datasets_from_config(adf_client, resource_group, factory_name, config, ctx)
 
     # Deploy Pipeline
     result = adf_client.pipelines.create_or_update(
@@ -256,8 +381,21 @@ def deploy_to_adf(pipeline_json_path: str, config: dict, ctx: dict):
         pipeline_name=pipeline_name,
         pipeline={"properties": pipeline_data["properties"]}
     )
+
+    # 🔔 Ensure schedule trigger if requested
+    trigger_result = None
+    schedule_str = (config or {}).get("schedule", "once")
+    try:
+        trigger_result = ensure_schedule_trigger(
+            adf_client, resource_group, factory_name, pipeline_name, schedule_str
+        )
+    except Exception as e:
+        # Don't fail the deployment just because scheduling failed
+        trigger_result = {"error": f"trigger_setup_failed: {e}", "schedule": schedule_str}
+
     return {
         "status": "deployed",
         "pipeline_name": pipeline_name,
-        "result": str(result)
+        "result": str(result),
+        "trigger_result": trigger_result
     }
